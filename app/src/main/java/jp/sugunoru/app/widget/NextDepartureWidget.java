@@ -46,7 +46,7 @@ public final class NextDepartureWidget extends AppWidgetProvider {
                 new RouteRepository(context).load(), direction, LocalDateTime.now(), preferences.holidays());
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_next_departure);
         views.setTextViewText(R.id.widget_direction,
-                direction == RoutePlan.Direction.OUTBOUND ? "出かける" : "帰る");
+                direction == RoutePlan.Direction.OUTBOUND ? "→  出かける・次の便" : "←  帰る・次の便");
         if (options.isEmpty()) {
             views.setTextViewText(R.id.widget_time, "--:--");
             views.setTextViewText(R.id.widget_route, "路線を登録してください");
@@ -59,7 +59,7 @@ public final class NextDepartureWidget extends AppWidgetProvider {
                     option.plan().routeName() + "  " + option.plan().stopName());
             views.setTextViewText(R.id.widget_wait,
                     ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "  ·  "
-                            + option.estimatedArrival().format(format) + "着");
+                            + option.estimatedArrival().format(format) + " 到着見込み");
         }
         Intent launch = new Intent(context, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

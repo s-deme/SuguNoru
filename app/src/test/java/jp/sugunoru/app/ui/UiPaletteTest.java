@@ -19,6 +19,23 @@ public class UiPaletteTest {
 
     @Test public void controlOutlineIsVisibleAgainstSurface() {
         assertTrue("操作枠 / 白は3:1以上", contrastRatio(CONTROL, SURFACE) >= 3.0);
+        assertTrue("カード枠 / 白は3:1以上", contrastRatio(OUTLINE, SURFACE) >= 3.0);
+    }
+
+    @Test public void darkThemePairsMeetContrastBaselines() {
+        try {
+            UiPalette.apply(true);
+            assertReadable("ダーク本文 / 面", INK, SURFACE);
+            assertReadable("ダーク補助 / 面", MUTED, SURFACE);
+            assertReadable("ダークヒント / 面", HINT, SURFACE);
+            assertReadable("ダークブランド文字 / 淡色", BRAND_DARK, BRAND_SOFT);
+            assertReadable("ダーク注意 / 淡色", AMBER, AMBER_SOFT);
+            assertReadable("ダーク削除 / 淡色", DANGER, DANGER_SOFT);
+            assertTrue("ダーク操作枠 / 面は3:1以上", contrastRatio(CONTROL, SURFACE) >= 3.0);
+            assertTrue("ダークカード枠 / 面は3:1以上", contrastRatio(OUTLINE, SURFACE) >= 3.0);
+        } finally {
+            UiPalette.apply(false);
+        }
     }
 
     private void assertReadable(String label, int foreground, int background) {
