@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="outbound"
+        android:enabled="true"
+        android:icon="@drawable/ic_notification"
+        android:shortcutShortLabel="@string/shortcut_outbound"
+        android:shortcutLongLabel="@string/shortcut_outbound_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="jp.sugunoru.app"
+            android:targetClass="jp.sugunoru.app.MainActivity">
+            <extra android:name="direction" android:value="OUTBOUND" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="return"
+        android:enabled="true"
+        android:icon="@drawable/ic_notification"
+        android:shortcutShortLabel="@string/shortcut_return"
+        android:shortcutLongLabel="@string/shortcut_return_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="jp.sugunoru.app"
+            android:targetClass="jp.sugunoru.app.MainActivity">
+            <extra android:name="direction" android:value="RETURN" />
+        </intent>
+    </shortcut>
+</shortcuts>

@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'jp.sugunoru.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'jp.sugunoru.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '2.1.0'
+
+        testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+    }
+
+    buildFeatures {
+        buildConfig = false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

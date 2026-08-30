@@ -1,0 +1,21 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing credentials and local secrets
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+google-services.json
+
+# Packaged artifacts belong in CI/release outputs, not source control
+*.apk
+*.aab

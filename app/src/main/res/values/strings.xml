@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">すぐのる</string>
+    <string name="widget_description">行き・帰りの最速候補と次発を表示します</string>
+    <string name="widget_outbound">出かける</string>
+    <string name="widget_no_time">--:--</string>
+    <string name="widget_no_route">路線を登録してください</string>
+    <string name="widget_open_hint">タップして開く</string>
+    <string name="widget_refresh_description">次発を更新</string>
+    <string name="widget_refresh_symbol">↻</string>
+    <string name="shortcut_outbound">出かける</string>
+    <string name="shortcut_outbound_long">出かける便をすぐ確認</string>
+    <string name="shortcut_return">帰る</string>
+    <string name="shortcut_return_long">帰る便をすぐ確認</string>
+</resources>
