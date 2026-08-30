@@ -2,29 +2,84 @@ name: Android CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_PLATFORM: "35"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+
 jobs:
   verify:
+    name: Test, inspect, and build debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           distribution: temurin
-          java-version: '21'
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-35" "build-tools;34.0.0"
-      - name: Test, lint, and build
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: sdkmanager "platforms;android-${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Test, lint, and build debug APK
+        shell: bash
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
+
+      - name: Verify APK signature, identity, and permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          tools="${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
+          test -s "$apk"
+          "$tools/apksigner" verify --verbose "$apk"
+
+          badging="$($tools/aapt2 dump badging "$apk")"
+          grep -q "package: name='jp.sugunoru.app'" <<<"$badging"
+
+          expected_permissions="$(mktemp)"
+          actual_permissions="$(mktemp)"
+          printf '%s\n' \
+            'android.permission.POST_NOTIFICATIONS' \
+            'android.permission.VIBRATE' | sort -u > "$expected_permissions"
+          "$tools/aapt2" dump permissions "$apk" \
+            | sed -n "s/^uses-permission[^:]*: name='\([^']*\)'.*/\1/p" \
+            | sort -u > "$actual_permissions"
+          if ! diff -u "$expected_permissions" "$actual_permissions"; then
+            echo '::error::APK permissions differ from the approved allowlist.'
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$apk" "dist/sugunoru-debug-${GITHUB_SHA}.apk"
+
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: sugunoru-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: sugunoru-debug-${{ github.sha }}
+          path: dist/sugunoru-debug-${{ github.sha }}.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

@@ -4,6 +4,7 @@ local.properties
 .idea/
 build/
 app/build/
+dist/
 captures/
 .externalNativeBuild/
 .cxx/
@@ -11,6 +12,8 @@ captures/
 # Signing credentials and local secrets
 *.jks
 *.keystore
+*.p12
+*.pfx
 keystore.properties
 .env
 .env.*
@@ -19,3 +22,4 @@ google-services.json
 # Packaged artifacts belong in CI/release outputs, not source control
 *.apk
 *.aab
+*.sha256

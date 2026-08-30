@@ -1,0 +1,201 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ANDROID_PLATFORM: "35"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+
+jobs:
+  release:
+    name: Build and publish signed APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: sdkmanager "platforms;android-${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Validate tag and source version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use the stable vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          mapfile -t version_names < <(
+            sed -nE "s/^[[:space:]]*versionName[[:space:]]+['\"]([^'\"]+)['\"].*/\1/p" app/build.gradle
+          )
+          mapfile -t version_codes < <(
+            sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*/\1/p' app/build.gradle
+          )
+          if [[ ${#version_names[@]} -ne 1 || ${#version_codes[@]} -ne 1 ]]; then
+            echo '::error::Exactly one versionName and versionCode must be declared in app/build.gradle.'
+            exit 1
+          fi
+
+          expected_version="${tag#v}"
+          if [[ "${version_names[0]}" != "$expected_version" ]]; then
+            echo "::error::Tag ${tag} does not match versionName ${version_names[0]}."
+            exit 1
+          fi
+          if [[ ! "${version_codes[0]}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::versionCode must be a positive integer.'
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release already exists for ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+
+      - name: Validate signing Secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::Missing required GitHub Secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Restore temporary release keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keystore_path="${RUNNER_TEMP}/sugunoru-release.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          test -s "$keystore_path"
+          printf 'ANDROID_KEYSTORE_PATH=%s\n' "$keystore_path" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew clean testReleaseUnitTest lintRelease assembleRelease --no-daemon
+
+      - name: Verify signed APK and create checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          tools="${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
+          test -s "$apk"
+          "$tools/apksigner" verify --verbose "$apk"
+          certificate="$($tools/apksigner verify --print-certs "$apk")"
+          if grep -qi 'Android Debug' <<<"$certificate"; then
+            echo '::error::The release APK is signed with a debug certificate.'
+            exit 1
+          fi
+
+          package_line="$($tools/aapt2 dump badging "$apk" | sed -n '1p')"
+          package_name="$(sed -n "s/.*name='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          version_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          version_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$package_line")"
+          if [[ "$package_name" != 'jp.sugunoru.app' ]]; then
+            echo "::error::Unexpected package ID: ${package_name}"
+            exit 1
+          fi
+          if [[ "$version_name" != "${GITHUB_REF_NAME#v}" ]]; then
+            echo "::error::Packaged versionName ${version_name} does not match ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          if [[ ! "$version_code" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Packaged versionCode must be a positive integer.'
+            exit 1
+          fi
+
+          expected_permissions="$(mktemp)"
+          actual_permissions="$(mktemp)"
+          printf '%s\n' \
+            'android.permission.POST_NOTIFICATIONS' \
+            'android.permission.VIBRATE' | sort -u > "$expected_permissions"
+          "$tools/aapt2" dump permissions "$apk" \
+            | sed -n "s/^uses-permission[^:]*: name='\([^']*\)'.*/\1/p" \
+            | sort -u > "$actual_permissions"
+          if ! diff -u "$expected_permissions" "$actual_permissions"; then
+            echo '::error::APK permissions differ from the approved allowlist.'
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$apk" dist/sugunoru.apk
+          (cd dist && sha256sum sugunoru.apk > sugunoru.apk.sha256)
+
+      - name: Create immutable GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release already exists for ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            dist/sugunoru.apk \
+            dist/sugunoru.apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --latest \
+            --title "SuguNoru ${GITHUB_REF_NAME#v}"
+
+      - name: Remove temporary release keystore
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f -- "${RUNNER_TEMP}/sugunoru-release.keystore"
