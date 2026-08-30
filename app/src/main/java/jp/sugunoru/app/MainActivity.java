@@ -26,7 +26,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsetsController;
-import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -47,6 +47,7 @@ import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.notification.DepartureAlarmReceiver;
 import jp.sugunoru.app.widget.NextDepartureWidget;
+import jp.sugunoru.app.ui.SystemBarInsetsApplier;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
@@ -105,16 +106,7 @@ public final class MainActivity extends android.app.Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        getWindow().setStatusBarColor(CANVAS);
-        getWindow().setNavigationBarColor(SURFACE);
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            getWindow().setDecorFitsSystemWindows(false);
-            getWindow().getDecorView().getWindowInsetsController().setSystemBarsAppearance(
-                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        }
+        configureSystemBars();
         repository = new RouteRepository(this);
         appPreferences = new AppPreferences(this);
         plans.addAll(repository.load());
@@ -166,8 +158,43 @@ public final class MainActivity extends android.app.Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        configureSystemBarIconAppearance();
         clockHandler.removeCallbacks(clockTick);
         clockHandler.post(clockTick);
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) configureSystemBarIconAppearance();
+    }
+
+    private void configureSystemBars() {
+        getWindow().setStatusBarColor(CANVAS);
+        getWindow().setNavigationBarColor(SURFACE);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            getWindow().setNavigationBarContrastEnforced(true);
+            getWindow().setStatusBarContrastEnforced(false);
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        }
+        configureSystemBarIconAppearance();
+    }
+
+    private void configureSystemBarIconAppearance() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = getWindow().getDecorView().getWindowInsetsController();
+            if (controller != null) {
+                int appearance = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(appearance, appearance);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                            | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        }
     }
 
     @Override protected void onPause() {
@@ -1416,14 +1443,8 @@ public final class MainActivity extends android.app.Activity {
                     : screen == Screen.TIMETABLE ? "時刻表" : "設定";
             content.setAccessibilityPaneTitle(paneTitle);
         }
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            outer.setOnApplyWindowInsetsListener((view, insets) -> {
-                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-                return insets;
-            });
-        }
         setContentView(outer);
+        if (android.os.Build.VERSION.SDK_INT >= 30) SystemBarInsetsApplier.install(outer);
     }
 
     private void markAsHeading(TextView view) {
