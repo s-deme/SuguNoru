@@ -43,6 +43,7 @@ import jp.sugunoru.app.data.RouteRepository;
 import jp.sugunoru.app.data.AppPreferences;
 import jp.sugunoru.app.data.OfficialTimetableFetcher;
 import jp.sugunoru.app.data.OfficialTimetableParser;
+import jp.sugunoru.app.data.TransitCatalog;
 import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.notification.DepartureAlarmReceiver;
@@ -595,6 +596,50 @@ public final class MainActivity extends StyledActivity {
         rideInput.setId(R.id.form_ride);
         EditText finalWalkInput = input("例：5", InputType.TYPE_CLASS_NUMBER, false);
         finalWalkInput.setId(R.id.form_final_walk);
+
+        LinearLayout catalogCard = vertical(SURFACE_VARIANT);
+        catalogCard.setPadding(dp(14), dp(14), dp(14), dp(14));
+        catalogCard.setBackground(roundRect(SURFACE_VARIANT, 16, BRAND_DARK, 1));
+        TextView catalogTitle = text("JR東日本・都営バスから選ぶ", 16, INK, Typeface.BOLD);
+        markAsHeading(catalogTitle);
+        catalogCard.addView(catalogTitle);
+        TextView catalogHelp = text("路線・系統、駅・停留所、方面の順に選ぶと、下の入力欄へ反映します。"
+                        + "候補外や通過駅は手入力で登録できます。",
+                13, MUTED, Typeface.NORMAL);
+        catalogHelp.setPadding(0, dp(4), 0, dp(10));
+        catalogCard.addView(catalogHelp);
+        LinearLayout catalogActions = horizontal(Gravity.CENTER_VERTICAL);
+        Button chooseJr = secondaryButton("JR東日本の駅を選ぶ");
+        Button chooseToei = secondaryButton("都営バスの停留所を選ぶ");
+        if (isConstrainedContent()) {
+            catalogActions.setOrientation(LinearLayout.VERTICAL);
+            catalogActions.addView(chooseJr);
+            catalogActions.addView(space(8));
+            catalogActions.addView(chooseToei);
+        } else {
+            LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            first.setMarginEnd(dp(4));
+            catalogActions.addView(chooseJr, first);
+            LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            second.setMarginStart(dp(4));
+            catalogActions.addView(chooseToei, second);
+        }
+        catalogCard.addView(catalogActions);
+        TextView catalogStatus = text("選択後も路線名・乗り場・行き先を自由に編集できます。",
+                13, BRAND_DARK, Typeface.NORMAL);
+        catalogStatus.setPadding(0, dp(10), 0, 0);
+        catalogCard.addView(catalogStatus);
+        chooseJr.setContentDescription("JR東日本の路線、駅、方面を選ぶ");
+        chooseToei.setContentDescription("都営バスの系統、停留所、方面を選ぶ");
+        chooseJr.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.JR_EAST,
+                modeInput, routeInput, stopInput, destinationInput, catalogStatus));
+        chooseToei.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.TOEI_BUS,
+                modeInput, routeInput, stopInput, destinationInput, catalogStatus));
+        form.addView(catalogCard);
+        form.addView(space(16));
+
         addField(form, "路線名", routeInput, null);
         addField(form, "乗る駅・停留所", stopInput, null);
         addField(form, "行き先", destinationInput, null);
@@ -820,6 +865,74 @@ public final class MainActivity extends StyledActivity {
         }
         root.addView(footer);
         setScreenContent(root);
+    }
+
+    private void showTransitServicePicker(
+            TransitCatalog.Provider provider,
+            Spinner modeInput,
+            EditText routeInput,
+            EditText stopInput,
+            EditText destinationInput,
+            TextView catalogStatus
+    ) {
+        List<TransitCatalog.Service> services = TransitCatalog.servicesFor(provider);
+        CharSequence[] labels = new CharSequence[services.size()];
+        for (int index = 0; index < services.size(); index++) {
+            labels[index] = services.get(index).displayName();
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(provider.displayName() + "の路線・系統を選ぶ")
+                .setItems(labels, (dialog, selected) -> showTransitStopPicker(services.get(selected),
+                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                .setNegativeButton("キャンセル", null)
+                .show();
+    }
+
+    private void showTransitStopPicker(
+            TransitCatalog.Service service,
+            Spinner modeInput,
+            EditText routeInput,
+            EditText stopInput,
+            EditText destinationInput,
+            TextView catalogStatus
+    ) {
+        List<String> stops = service.stops();
+        new AlertDialog.Builder(this)
+                .setTitle(service.displayName() + "\n乗る駅・停留所を選ぶ")
+                .setItems(stops.toArray(new CharSequence[0]), (dialog, selected) ->
+                        showTransitDestinationPicker(service, stops.get(selected), modeInput,
+                                routeInput, stopInput, destinationInput, catalogStatus))
+                .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(service.provider(),
+                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                .show();
+    }
+
+    private void showTransitDestinationPicker(
+            TransitCatalog.Service service,
+            String stop,
+            Spinner modeInput,
+            EditText routeInput,
+            EditText stopInput,
+            EditText destinationInput,
+            TextView catalogStatus
+    ) {
+        List<String> destinations = service.destinations();
+        new AlertDialog.Builder(this)
+                .setTitle("行き先・方面を選ぶ")
+                .setItems(destinations.toArray(new CharSequence[0]), (dialog, selected) -> {
+                    modeInput.setSelection(service.mode() == RoutePlan.Mode.TRAIN ? 0 : 1);
+                    routeInput.setText(service.displayName());
+                    stopInput.setText(stop);
+                    destinationInput.setText(destinations.get(selected));
+                    String result = "選択済み: " + service.provider().displayName() + " / "
+                            + service.displayName() + " / " + stop + " / "
+                            + destinations.get(selected);
+                    catalogStatus.setText(result);
+                    catalogStatus.announceForAccessibility(result);
+                })
+                .setNegativeButton("戻る", (dialog, ignored) -> showTransitStopPicker(service,
+                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                .show();
     }
 
     private void showTimetable(RoutePlan plan) {
