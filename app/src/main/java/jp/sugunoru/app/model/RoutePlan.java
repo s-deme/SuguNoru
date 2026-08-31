@@ -4,8 +4,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.time.LocalTime;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,6 +34,10 @@ public final class RoutePlan {
     private final String notes;
     private final LocalDate validUntil;
     private final long updatedAtEpochMillis;
+    private final String officialTimetableUrl;
+    private final long officialTimetableFetchedAtEpochMillis;
+    private final long officialTimetableAttemptedAtEpochMillis;
+    private final String officialTimetableLastError;
 
     public RoutePlan(
             String id,
@@ -57,6 +63,21 @@ public final class RoutePlan {
             List<LocalTime> holidayTimes, String notes, LocalDate validUntil,
             long updatedAtEpochMillis
     ) {
+        this(id, direction, mode, routeName, stopName, destination, walkMinutes, rideMinutes,
+                finalWalkMinutes, enabled, weekdayTimes, weekendTimes, holidayTimes, notes,
+                validUntil, updatedAtEpochMillis, "", 0, 0, "");
+    }
+
+    public RoutePlan(
+            String id, Direction direction, Mode mode, String routeName, String stopName,
+            String destination, int walkMinutes, int rideMinutes, int finalWalkMinutes,
+            boolean enabled, List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, String notes, LocalDate validUntil,
+            long updatedAtEpochMillis, String officialTimetableUrl,
+            long officialTimetableFetchedAtEpochMillis,
+            long officialTimetableAttemptedAtEpochMillis,
+            String officialTimetableLastError
+    ) {
         this.id = id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
         this.direction = Objects.requireNonNull(direction);
         this.mode = Objects.requireNonNull(mode);
@@ -73,7 +94,13 @@ public final class RoutePlan {
         this.notes = notes == null ? "" : notes.trim();
         this.validUntil = validUntil;
         this.updatedAtEpochMillis = updatedAtEpochMillis > 0 ? updatedAtEpochMillis : System.currentTimeMillis();
-        if (this.weekdayTimes.isEmpty() && this.weekendTimes.isEmpty() && this.holidayTimes.isEmpty()) {
+        this.officialTimetableUrl = normalizeOfficialTimetableUrl(officialTimetableUrl);
+        this.officialTimetableFetchedAtEpochMillis = Math.max(0, officialTimetableFetchedAtEpochMillis);
+        this.officialTimetableAttemptedAtEpochMillis = Math.max(0, officialTimetableAttemptedAtEpochMillis);
+        this.officialTimetableLastError = officialTimetableLastError == null
+                ? "" : officialTimetableLastError.trim();
+        if (this.weekdayTimes.isEmpty() && this.weekendTimes.isEmpty() && this.holidayTimes.isEmpty()
+                && this.officialTimetableUrl.isEmpty()) {
             throw new IllegalArgumentException("時刻を1件以上入力してください");
         }
     }
@@ -85,6 +112,55 @@ public final class RoutePlan {
     ) {
         return new RoutePlan(null, direction, mode, routeName, stopName, destination,
                 walkMinutes, rideMinutes, weekdayTimes, weekendTimes);
+    }
+
+    /** Returns an independent copy with a new identifier and update timestamp. */
+    public RoutePlan duplicate(String routeName) {
+        return new RoutePlan(null, direction, mode, routeName, stopName, destination,
+                walkMinutes, rideMinutes, finalWalkMinutes, enabled,
+                weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
+                System.currentTimeMillis(), officialTimetableUrl,
+                officialTimetableFetchedAtEpochMillis, officialTimetableAttemptedAtEpochMillis,
+                officialTimetableLastError);
+    }
+
+    /** Returns a copy whose timetable came from the configured official source. */
+    public RoutePlan withFetchedOfficialTimetable(
+            List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, long fetchedAtEpochMillis
+    ) {
+        return new RoutePlan(id, direction, mode, routeName, stopName, destination,
+                walkMinutes, rideMinutes, finalWalkMinutes, enabled,
+                weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
+                System.currentTimeMillis(), officialTimetableUrl, fetchedAtEpochMillis,
+                fetchedAtEpochMillis, "");
+    }
+
+    /** Keeps the last successful timetable intact while recording a failed refresh. */
+    public RoutePlan withOfficialTimetableFetchFailure(long attemptedAtEpochMillis, String error) {
+        return new RoutePlan(id, direction, mode, routeName, stopName, destination,
+                walkMinutes, rideMinutes, finalWalkMinutes, enabled,
+                weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
+                System.currentTimeMillis(), officialTimetableUrl,
+                officialTimetableFetchedAtEpochMillis, attemptedAtEpochMillis, error);
+    }
+
+    public static String normalizeOfficialTimetableUrl(String value) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.isEmpty()) return "";
+        if (normalized.length() > 2_048) {
+            throw new IllegalArgumentException("公式時刻表URLが長すぎます");
+        }
+        try {
+            URI uri = new URI(normalized);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getHost().isBlank() || uri.getUserInfo() != null) {
+                throw new IllegalArgumentException("公式時刻表URLは https:// で始まる公式ページを入力してください");
+            }
+            return uri.toASCIIString();
+        } catch (URISyntaxException error) {
+            throw new IllegalArgumentException("公式時刻表URLの形式を確認してください");
+        }
     }
 
     private static String requireText(String value, String label) {
@@ -125,6 +201,16 @@ public final class RoutePlan {
         json.put("notes", notes);
         if (validUntil != null) json.put("validUntil", validUntil.toString());
         json.put("updatedAt", updatedAtEpochMillis);
+        if (!officialTimetableUrl.isEmpty()) json.put("officialTimetableUrl", officialTimetableUrl);
+        if (officialTimetableFetchedAtEpochMillis > 0) {
+            json.put("officialTimetableFetchedAt", officialTimetableFetchedAtEpochMillis);
+        }
+        if (officialTimetableAttemptedAtEpochMillis > 0) {
+            json.put("officialTimetableAttemptedAt", officialTimetableAttemptedAtEpochMillis);
+        }
+        if (!officialTimetableLastError.isEmpty()) {
+            json.put("officialTimetableLastError", officialTimetableLastError);
+        }
         return json;
     }
 
@@ -147,7 +233,11 @@ public final class RoutePlan {
                 json.has("holidayTimes") ? timesFromJson(json.getJSONArray("holidayTimes")) : List.of(),
                 json.optString("notes", ""),
                 validUntil,
-                json.optLong("updatedAt", System.currentTimeMillis())
+                json.optLong("updatedAt", System.currentTimeMillis()),
+                json.optString("officialTimetableUrl", ""),
+                json.optLong("officialTimetableFetchedAt", 0),
+                json.optLong("officialTimetableAttemptedAt", 0),
+                json.optString("officialTimetableLastError", "")
         );
     }
 
@@ -179,4 +269,12 @@ public final class RoutePlan {
     public String notes() { return notes; }
     public LocalDate validUntil() { return validUntil; }
     public long updatedAtEpochMillis() { return updatedAtEpochMillis; }
+    public String officialTimetableUrl() { return officialTimetableUrl; }
+    public long officialTimetableFetchedAtEpochMillis() { return officialTimetableFetchedAtEpochMillis; }
+    public long officialTimetableAttemptedAtEpochMillis() { return officialTimetableAttemptedAtEpochMillis; }
+    public String officialTimetableLastError() { return officialTimetableLastError; }
+    public boolean hasOfficialTimetableSource() { return !officialTimetableUrl.isEmpty(); }
+    public boolean hasCachedTimetable() {
+        return !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
+    }
 }

@@ -17,7 +17,7 @@ public final class RouteRepository {
     private static final String PREFS = "sugunoru_routes";
     private static final String KEY_ROUTES = "routes_v1";
     private static final String KEY_BACKUP = "routes_backup_v1";
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
     private final SharedPreferences preferences;
 
     public RouteRepository(Context context) {

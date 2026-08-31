@@ -6,7 +6,6 @@ import android.app.PendingIntent;
 import android.app.TimePickerDialog;
 import android.app.DatePickerDialog;
 import android.appwidget.AppWidgetManager;
-import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.ComponentName;
@@ -14,21 +13,20 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.RippleDrawable;
-import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -37,49 +35,57 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Space;
 import android.widget.Spinner;
-import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.CheckBox;
 
 import jp.sugunoru.app.data.RouteRepository;
 import jp.sugunoru.app.data.AppPreferences;
+import jp.sugunoru.app.data.OfficialTimetableFetcher;
+import jp.sugunoru.app.data.OfficialTimetableParser;
 import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.notification.DepartureAlarmReceiver;
 import jp.sugunoru.app.widget.NextDepartureWidget;
+import jp.sugunoru.app.ui.StyledActivity;
 import jp.sugunoru.app.ui.SystemBarInsetsApplier;
 
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-import java.time.format.TextStyle;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.ByteArrayOutputStream;
-
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.clock;
+import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.date;
+import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.time;
+import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.times;
 import static jp.sugunoru.app.ui.UiPalette.*;
-import java.nio.charset.StandardCharsets;
 
-public final class MainActivity extends android.app.Activity {
+public final class MainActivity extends StyledActivity {
     private enum Screen { DASHBOARD, FORM, TIMETABLE, SETTINGS }
     private static final int REQUEST_EXPORT = 301;
     private static final int REQUEST_IMPORT = 302;
     private static final int REQUEST_NOTIFICATIONS = 303;
+    private static final long OFFICIAL_TIMETABLE_REFRESH_INTERVAL_MILLIS = 24L * 60 * 60 * 1_000;
 
     private final Handler clockHandler = new Handler(Looper.getMainLooper());
     private final List<RoutePlan> plans = new ArrayList<>();
-    private final DateTimeFormatter clockFormat = DateTimeFormatter.ofPattern("H:mm", Locale.JAPAN);
-    private final DateTimeFormatter timeFormat = DateTimeFormatter.ofPattern("HH:mm", Locale.JAPAN);
+    private final ExecutorService officialTimetableExecutor = Executors.newSingleThreadExecutor();
+    private final Set<String> refreshingOfficialTimetableIds = new HashSet<>();
     private RouteRepository repository;
     private AppPreferences appPreferences;
     private RoutePlan.Direction direction = RoutePlan.Direction.OUTBOUND;
@@ -131,6 +137,7 @@ public final class MainActivity extends android.app.Activity {
             else if (screen == Screen.SETTINGS) showSettings();
             else showDashboard();
         }
+        refreshStaleOfficialTimetables();
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -138,6 +145,7 @@ public final class MainActivity extends android.app.Activity {
         setIntent(intent);
         applyLaunchDirection(intent);
         showDashboard();
+        refreshStaleOfficialTimetables();
     }
 
     private void applyLaunchDirection(Intent intent) {
@@ -206,6 +214,11 @@ public final class MainActivity extends android.app.Activity {
     @Override protected void onPause() {
         clockHandler.removeCallbacks(clockTick);
         super.onPause();
+    }
+
+    @Override protected void onDestroy() {
+        officialTimetableExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override public void onBackPressed() {
@@ -303,13 +316,13 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout top = horizontal(Gravity.BOTTOM);
         if (isConstrainedContent()) top.setOrientation(LinearLayout.VERTICAL);
         LocalDateTime shown = referenceTime();
-        liveClock = text(shown.format(clockFormat), 44, Color.WHITE, Typeface.BOLD);
+        liveClock = text(clock(shown), 44, Color.WHITE, Typeface.BOLD);
         liveClock.setFontFeatureSettings("tnum");
         liveClock.setLetterSpacing(-0.03f);
         top.addView(liveClock, isConstrainedContent()
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        liveDate = text(formatDate(shown.toLocalDate()), 14, WHITE, Typeface.NORMAL);
+        liveDate = text(date(shown.toLocalDate()), 14, WHITE, Typeface.NORMAL);
         liveDate.setPadding(isConstrainedContent() ? 0 : dp(10), 0, 0, dp(8));
         top.addView(liveDate);
         card.addView(top);
@@ -362,8 +375,18 @@ public final class MainActivity extends android.app.Activity {
 
     private View emptyState() {
         boolean hasThisDirection = false;
-        for (RoutePlan plan : plans) if (plan.direction() == direction) hasThisDirection = true;
-        final boolean hasInactiveRoutes = hasThisDirection;
+        boolean hasActiveRoute = false;
+        List<String> missingOfficialTimetableIds = new ArrayList<>();
+        for (RoutePlan plan : plans) {
+            if (plan.direction() != direction) continue;
+            hasThisDirection = true;
+            if (plan.enabled()) hasActiveRoute = true;
+            if (plan.enabled() && plan.hasOfficialTimetableSource() && !plan.hasCachedTimetable()) {
+                missingOfficialTimetableIds.add(plan.id());
+            }
+        }
+        final boolean hasRoutesInDirection = hasThisDirection;
+        boolean waitingForOfficialTimetable = !missingOfficialTimetableIds.isEmpty();
         LinearLayout card = vertical(Color.TRANSPARENT);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
         card.setPadding(dp(24), dp(28), dp(24), dp(26));
@@ -374,18 +397,28 @@ public final class MainActivity extends android.app.Activity {
         icon.setPadding(dp(14), dp(8), dp(14), dp(8));
         card.addView(icon);
         card.addView(space(14));
-        card.addView(centerText(hasThisDirection ? "比較対象がありません" : "まだ路線がありません",
+        card.addView(centerText(waitingForOfficialTimetable ? "時刻表を取得待ちです"
+                        : hasRoutesInDirection ? (hasActiveRoute ? "次の便が見つかりません" : "比較対象がありません")
+                        : "まだ路線がありません",
                 19, INK, Typeface.BOLD));
-        TextView body = centerText(hasThisDirection
-                        ? "この場面の登録はすべて無効です。\n設定から比較対象に戻せます。"
+        TextView body = centerText(waitingForOfficialTimetable
+                        ? "公式サイトから時刻表を取得すると\nすぐに次の便を比較できます。"
+                        : hasRoutesInDirection ? (hasActiveRoute
+                                ? "時刻表の確認や公式サイトからの更新を\n行ってください。"
+                                : "この場面の登録はすべて無効です。\n設定から比較対象に戻せます。")
                         : "よく使う駅・停留所と時刻表を登録すると\n次に乗れる便をすぐ比較できます。",
                 14, MUTED, Typeface.NORMAL);
         body.setLineSpacing(dp(3), 1f);
         body.setPadding(0, dp(8), 0, 0);
         card.addView(body);
-        Button sample = smallButton(hasThisDirection ? "設定で登録を管理" : "サンプルで試す");
+        Button sample = smallButton(waitingForOfficialTimetable ? "公式時刻表を取得"
+                : hasRoutesInDirection ? "設定で登録を管理" : "サンプルで試す");
         sample.setMinHeight(dp(48));
-        sample.setOnClickListener(v -> { if (hasInactiveRoutes) showSettings(); else installSampleRoutes(); });
+        sample.setOnClickListener(v -> {
+            if (waitingForOfficialTimetable) refreshOfficialTimetables(missingOfficialTimetableIds, true);
+            else if (hasRoutesInDirection) showSettings();
+            else installSampleRoutes();
+        });
         card.addView(sample);
         return card;
     }
@@ -403,7 +436,7 @@ public final class MainActivity extends android.app.Activity {
         card.setOnClickListener(v -> showTimetable(plan));
         card.setFocusable(true);
         card.setContentDescription(plan.routeName() + "、" + plan.stopName() + "から"
-                + plan.destination() + "、" + option.departure().at().format(timeFormat) + "発、"
+                + plan.destination() + "、" + time(option.departure().at()) + "発、"
                 + ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "。タップして時刻表を開く");
 
         LinearLayout meta = horizontal(Gravity.CENTER_VERTICAL);
@@ -422,7 +455,7 @@ public final class MainActivity extends android.app.Activity {
 
         LinearLayout timing = vertical(Color.TRANSPARENT);
         LinearLayout departureRow = horizontal(Gravity.BOTTOM);
-        TextView departure = text(option.departure().at().format(timeFormat), 34, INK, Typeface.BOLD);
+        TextView departure = text(time(option.departure().at()), 34, INK, Typeface.BOLD);
         departure.setFontFeatureSettings("tnum");
         departureRow.addView(departure);
         TextView suffix = text(option.departure().nextDay() ? "  翌日の便" : "  発", 14, MUTED, Typeface.BOLD);
@@ -447,7 +480,7 @@ public final class MainActivity extends android.app.Activity {
         arrival.setBackground(roundRect(BRAND_SOFT, 15, 0, 0));
         arrival.addView(text("到着見込み", 14, BRAND_DARK, Typeface.BOLD),
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView arrivalTime = text(option.estimatedArrival().format(timeFormat), 22, BRAND_DARK, Typeface.BOLD);
+        TextView arrivalTime = text(time(option.estimatedArrival()), 22, BRAND_DARK, Typeface.BOLD);
         arrivalTime.setFontFeatureSettings("tnum");
         arrival.addView(arrivalTime);
         card.addView(arrival);
@@ -479,7 +512,7 @@ public final class MainActivity extends android.app.Activity {
         StringBuilder following = new StringBuilder("このあと  ");
         for (int i = 1; i < next.size(); i++) {
             if (i > 1) following.append("  ·  ");
-            following.append(next.get(i).at().format(timeFormat));
+            following.append(time(next.get(i).at()));
         }
         if (next.size() <= 1) following.append("登録便なし");
         LinearLayout nextRow = horizontal(Gravity.CENTER_VERTICAL);
@@ -590,15 +623,62 @@ public final class MainActivity extends android.app.Activity {
         addField(form, "降りてから目的地まで（分）", finalWalkInput,
                 "最終的な到着時刻の比較に含めます。なければ 0");
 
-        form.addView(formSectionTitle("3", "時刻表", "時刻はまとめて貼り付けできます"));
+        form.addView(formSectionTitle("3", "時刻表", "公式ページから取得し、通信できないときは保存済みのデータを使います"));
         form.addView(space(12));
 
+        EditText officialTimetableUrlInput = input("https://…",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, false);
+        officialTimetableUrlInput.setId(R.id.form_official_timetable_url);
         EditText weekdayInput = input("07:05  07:18  07:34\n08:02  08:20", InputType.TYPE_CLASS_TEXT, true);
         weekdayInput.setId(R.id.form_weekday);
         EditText weekendInput = input("08:10  08:40  09:10", InputType.TYPE_CLASS_TEXT, true);
         weekendInput.setId(R.id.form_weekend);
         EditText holidayInput = input("08:10  08:40  09:10", InputType.TYPE_CLASS_TEXT, true);
         holidayInput.setId(R.id.form_holiday);
+        addField(form, "公式時刻表ページ（任意）", officialTimetableUrlInput,
+                "交通事業者の https:// 時刻表ページを指定します。ログインやJavaScriptだけで表示するページは対象外です");
+        final long[] draftFetchedAt = {existing == null ? 0 : existing.officialTimetableFetchedAtEpochMillis()};
+        final long[] draftAttemptedAt = {existing == null ? 0 : existing.officialTimetableAttemptedAtEpochMillis()};
+        final String[] draftLastError = {existing == null ? "" : existing.officialTimetableLastError()};
+        final String[] draftFetchedUrl = {existing == null ? "" : existing.officialTimetableUrl()};
+        final boolean[] draftFetchedInThisSession = {false};
+        Button fetchOfficial = secondaryButton("公式サイトから時刻表を取得");
+        fetchOfficial.setContentDescription("公式時刻表ページから平日、土日、祝日の時刻を取得する");
+        fetchOfficial.setOnClickListener(v -> {
+            String sourceUrl;
+            try {
+                sourceUrl = RoutePlan.normalizeOfficialTimetableUrl(
+                        officialTimetableUrlInput.getText().toString());
+            } catch (IllegalArgumentException error) {
+                officialTimetableUrlInput.setError(error.getMessage());
+                officialTimetableUrlInput.requestFocus();
+                return;
+            }
+            if (sourceUrl.isEmpty()) {
+                officialTimetableUrlInput.setError("公式時刻表ページを入力してください");
+                officialTimetableUrlInput.requestFocus();
+                return;
+            }
+            officialTimetableUrlInput.setText(sourceUrl);
+            fetchOfficialTimetableIntoForm(sourceUrl, weekdayInput, weekendInput, holidayInput,
+                    fetchOfficial, () -> {
+                        long now = System.currentTimeMillis();
+                        draftFetchedAt[0] = now;
+                        draftAttemptedAt[0] = now;
+                        draftLastError[0] = "";
+                        draftFetchedUrl[0] = sourceUrl;
+                        draftFetchedInThisSession[0] = true;
+                    });
+        });
+        form.addView(fetchOfficial);
+        form.addView(space(18));
+        TextView manualTimesLabel = text("手入力の予備", 15, INK, Typeface.BOLD);
+        markAsHeading(manualTimesLabel);
+        form.addView(manualTimesLabel);
+        TextView manualTimesHelp = text("取得結果はここへ反映されます。URLを設定すれば、初回保存後も自動更新します。",
+                13, MUTED, Typeface.NORMAL);
+        manualTimesHelp.setPadding(0, dp(4), 0, dp(10));
+        form.addView(manualTimesHelp);
         addField(form, "平日の時刻表", weekdayInput, "空白・改行・カンマ区切り。0705 の形式でも入力できます");
         addFrequencyBuilder(form, weekdayInput, "平日");
         addField(form, "土日の時刻表", weekendInput, "空欄なら平日の時刻を使います");
@@ -625,9 +705,10 @@ public final class MainActivity extends android.app.Activity {
             walkInput.setText(String.valueOf(existing.walkMinutes()));
             rideInput.setText(String.valueOf(existing.rideMinutes()));
             finalWalkInput.setText(String.valueOf(existing.finalWalkMinutes()));
-            weekdayInput.setText(joinTimes(existing.weekdayTimes()));
-            weekendInput.setText(joinTimes(existing.weekendTimes()));
-            holidayInput.setText(joinTimes(existing.holidayTimes()));
+            officialTimetableUrlInput.setText(existing.officialTimetableUrl());
+            weekdayInput.setText(times(existing.weekdayTimes()));
+            weekendInput.setText(times(existing.weekendTimes()));
+            holidayInput.setText(times(existing.holidayTimes()));
             validUntilInput.setText(existing.validUntil() == null ? "" : existing.validUntil().toString());
             notesInput.setText(existing.notes());
         } else {
@@ -669,6 +750,30 @@ public final class MainActivity extends android.app.Activity {
                     holidayInput.setError(error.getMessage()); holidayInput.requestFocus(); return;
                 }
                 if (weekends.isEmpty()) weekends = weekdays;
+                String officialTimetableUrl;
+                try {
+                    officialTimetableUrl = RoutePlan.normalizeOfficialTimetableUrl(
+                            officialTimetableUrlInput.getText().toString());
+                } catch (IllegalArgumentException error) {
+                    officialTimetableUrlInput.setError(error.getMessage());
+                    officialTimetableUrlInput.requestFocus();
+                    return;
+                }
+                boolean fetchedFromCurrentUrl = officialTimetableUrl.equals(draftFetchedUrl[0]);
+                if (!fetchedFromCurrentUrl) {
+                    draftFetchedAt[0] = 0;
+                    draftAttemptedAt[0] = 0;
+                    draftLastError[0] = "";
+                }
+                boolean manualTimesChanged = existing != null
+                        && (!weekdays.equals(existing.weekdayTimes())
+                        || !weekends.equals(existing.weekendTimes())
+                        || !holidays.equals(existing.holidayTimes()));
+                if (manualTimesChanged && !draftFetchedInThisSession[0]) {
+                    draftFetchedAt[0] = 0;
+                    draftAttemptedAt[0] = 0;
+                    draftLastError[0] = "";
+                }
                 LocalDate validUntil;
                 try {
                     validUntil = validUntilInput.getText().toString().trim().isEmpty()
@@ -686,18 +791,22 @@ public final class MainActivity extends android.app.Activity {
                         routeInput.getText().toString(), stopInput.getText().toString(),
                         destinationInput.getText().toString(), walk, ride, finalWalk,
                         enabledInput.isChecked(), weekdays, weekends, holidays,
-                        notesInput.getText().toString(), validUntil, System.currentTimeMillis());
+                        notesInput.getText().toString(), validUntil, System.currentTimeMillis(),
+                        officialTimetableUrl, draftFetchedAt[0], draftAttemptedAt[0], draftLastError[0]);
                 List<RoutePlan> updated = new ArrayList<>(plans);
                 if (existing == null) updated.add(plan);
                 else updated.set(indexOf(existing.id()), plan);
-                if (!repository.save(updated)) throw new IllegalStateException("端末に保存できませんでした");
-                plans.clear();
-                plans.addAll(updated);
+                if (!saveAndApply(updated)) throw new IllegalStateException("端末に保存できませんでした");
                 direction = plan.direction();
                 appPreferences.setDirection(direction);
-                NextDepartureWidget.updateAll(this);
-                Toast.makeText(this, existing == null ? "登録しました" : "変更を保存しました", Toast.LENGTH_SHORT).show();
                 showDashboard();
+                if (plan.hasOfficialTimetableSource()
+                        && (plan.officialTimetableFetchedAtEpochMillis() == 0 || !plan.hasCachedTimetable())) {
+                    Toast.makeText(this, "保存しました。公式時刻表を取得しています", Toast.LENGTH_SHORT).show();
+                    refreshOfficialTimetables(List.of(plan.id()), true);
+                } else {
+                    Toast.makeText(this, existing == null ? "登録しました" : "変更を保存しました", Toast.LENGTH_SHORT).show();
+                }
             } catch (RuntimeException error) {
                 Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
             }
@@ -747,6 +856,12 @@ public final class MainActivity extends android.app.Activity {
         summaryParams.setMargins(dp(18), dp(8), dp(18), dp(12));
         root.addView(summary, summaryParams);
 
+        View sourceStatus = officialTimetableStatusCard(plan);
+        LinearLayout.LayoutParams sourceStatusParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sourceStatusParams.setMargins(dp(18), 0, dp(18), dp(12));
+        root.addView(sourceStatus, sourceStatusParams);
+
         List<ScheduleEngine.Departure> next = ScheduleEngine.nextDepartures(
                 plan, referenceTime(), 3, appPreferences.holidays());
         if (!next.isEmpty()) root.addView(nextDeparturesCard(next));
@@ -780,6 +895,64 @@ public final class MainActivity extends android.app.Activity {
         setScreenContent(root);
     }
 
+    private View officialTimetableStatusCard(RoutePlan plan) {
+        LinearLayout card = vertical(INFO_SOFT);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        card.setBackground(roundRect(INFO_SOFT, 18, INFO, 1));
+
+        LinearLayout titleRow = horizontal(Gravity.CENTER_VERTICAL);
+        titleRow.addView(pill(plan.hasOfficialTimetableSource() ? "公式サイト" : "手入力",
+                INFO, SURFACE));
+        TextView title = text(plan.hasOfficialTimetableSource()
+                        ? "時刻表の取得と保存" : "時刻表のデータ元",
+                15, INK, Typeface.BOLD);
+        title.setPadding(dp(8), 0, 0, 0);
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        card.addView(titleRow);
+
+        boolean refreshing = refreshingOfficialTimetableIds.contains(plan.id());
+        String status;
+        if (!plan.hasOfficialTimetableSource()) {
+            status = "現在は手入力の時刻表です。交通事業者の公式ページを設定すると、自動取得できます。";
+        } else if (refreshing) {
+            status = "公式サイトから取得中です。表示中の時刻表は端末に保存された最終データのままです。";
+        } else if (!plan.hasCachedTimetable()) {
+            status = "まだ取得済みの時刻表がありません。オンラインで更新すると、この端末に保存されます。";
+        } else if (!plan.officialTimetableLastError().isEmpty()) {
+            status = "前回の更新に失敗したため、保存済みの最終取得データを表示しています。";
+        } else if (plan.officialTimetableFetchedAtEpochMillis() > 0) {
+            status = "最終取得: " + officialTimetableTimestamp(plan.officialTimetableFetchedAtEpochMillis())
+                    + "\n通信できない場合も、この保存済みデータを使用します。";
+        } else {
+            status = "保存済みの手入力データを表示しています。公式サイトから更新すると、次回以降も自動で確認します。";
+        }
+        TextView body = text(status, 13, INK, Typeface.NORMAL);
+        body.setLineSpacing(dp(2), 1f);
+        body.setPadding(0, dp(9), 0, dp(9));
+        card.addView(body);
+
+        Button action = plan.hasOfficialTimetableSource()
+                ? secondaryButton(refreshing ? "公式サイトから取得中…" : "公式サイトから今すぐ更新")
+                : smallButton("公式サイトを設定");
+        action.setEnabled(!refreshing);
+        action.setContentDescription(plan.hasOfficialTimetableSource()
+                ? "公式サイトから時刻表を今すぐ更新する" : "公式時刻表ページを設定する");
+        action.setOnClickListener(v -> {
+            if (plan.hasOfficialTimetableSource()) {
+                refreshOfficialTimetables(List.of(plan.id()), true);
+            } else {
+                showForm(plan);
+            }
+        });
+        card.addView(action);
+        return card;
+    }
+
+    private String officialTimetableTimestamp(long epochMillis) {
+        LocalDateTime value = LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault());
+        return date(value.toLocalDate()) + " " + time(value);
+    }
+
     private View nextDeparturesCard(List<ScheduleEngine.Departure> departures) {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
@@ -791,7 +964,7 @@ public final class MainActivity extends android.app.Activity {
             chip.setPadding(dp(16), dp(12), dp(16), dp(12));
             chip.setBackground(roundRect(i == 0 ? BRAND : SURFACE_VARIANT, 17,
                     i == 0 ? 0 : LINE, 1));
-            chip.addView(text((i == 0 ? "次の便  " : "") + item.at().format(timeFormat),
+            chip.addView(text((i == 0 ? "次の便  " : "") + time(item.at()),
                     17, i == 0 ? Color.WHITE : INK, Typeface.BOLD));
             chip.addView(text(ScheduleEngine.formatMinutes(item.waitMinutes()), 14,
                     i == 0 ? WHITE : MUTED, Typeface.NORMAL));
@@ -877,13 +1050,10 @@ public final class MainActivity extends android.app.Activity {
                 .setPositiveButton("削除", (dialog, which) -> {
                     List<RoutePlan> updated = new ArrayList<>(plans);
                     updated.removeIf(item -> item.id().equals(plan.id()));
-                    if (!repository.save(updated)) {
+                    if (!saveAndApply(updated)) {
                         Toast.makeText(this, "削除内容を保存できませんでした", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    plans.clear();
-                    plans.addAll(updated);
-                    NextDepartureWidget.updateAll(this);
                     Toast.makeText(this, "削除しました", Toast.LENGTH_SHORT).show();
                     showDashboard();
                 })
@@ -913,6 +1083,40 @@ public final class MainActivity extends android.app.Activity {
         restore.setOnClickListener(v -> confirmRestoreBackup());
         backupCard.addView(restore);
         content.addView(backupCard);
+        content.addView(space(12));
+
+        List<String> officialSourceIds = new ArrayList<>();
+        for (RoutePlan plan : plans) {
+            if (plan.hasOfficialTimetableSource()) officialSourceIds.add(plan.id());
+        }
+        LinearLayout officialCard = settingsCard("公式時刻表の更新",
+                "設定済みの公式ページを起動時に確認し、最終取得データを端末に保存します");
+        if (officialSourceIds.isEmpty()) {
+            TextView empty = text("公式時刻表ページが設定された路線はありません。路線の編集から追加できます。",
+                    14, MUTED, Typeface.NORMAL);
+            empty.setLineSpacing(dp(2), 1f);
+            officialCard.addView(empty);
+        } else {
+            int refreshingCount = 0;
+            for (String id : officialSourceIds) {
+                if (refreshingOfficialTimetableIds.contains(id)) refreshingCount++;
+            }
+            TextView status = text(refreshingCount > 0
+                            ? refreshingCount + "件を取得中です。保存済みの時刻表はそのまま利用できます。"
+                            : officialSourceIds.size() + "件の公式時刻表を設定済みです。通信できない場合も最終取得データを使用します。",
+                    14, BRAND_DARK, Typeface.NORMAL);
+            status.setLineSpacing(dp(2), 1f);
+            status.setPadding(dp(12), dp(10), dp(12), dp(10));
+            status.setBackground(roundRect(BRAND_SOFT, 14, 0, 0));
+            officialCard.addView(status);
+            officialCard.addView(space(10));
+            Button refreshAll = secondaryButton(refreshingCount > 0
+                    ? "公式時刻表を取得中…" : "公式時刻表をすべて更新");
+            refreshAll.setEnabled(refreshingCount == 0);
+            refreshAll.setOnClickListener(v -> refreshOfficialTimetables(officialSourceIds, true));
+            officialCard.addView(refreshAll);
+        }
+        content.addView(officialCard);
         content.addView(space(12));
 
         LinearLayout holidayCard = settingsCard("祝日・臨時休日", "1行に1日、YYYY-MM-DD形式で登録");
@@ -1087,12 +1291,12 @@ public final class MainActivity extends android.app.Activity {
         triggerAt = Math.max(triggerAt, System.currentTimeMillis() + 1000);
         Intent intent = new Intent(this, DepartureAlarmReceiver.class)
                 .putExtra("title", plan.routeName() + "へ出発する時間です")
-                .putExtra("detail", plan.stopName() + " " + departure.at().format(timeFormat) + "発")
+                .putExtra("detail", plan.stopName() + " " + time(departure.at()) + "発")
                 .putExtra("notificationId", Math.abs(plan.id().hashCode()));
         PendingIntent pending = PendingIntent.getBroadcast(this, Math.abs(plan.id().hashCode()), intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         getSystemService(AlarmManager.class).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
-        Toast.makeText(this, leaveAt.format(timeFormat) + "ごろ通知します", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, time(leaveAt) + "ごろ通知します", Toast.LENGTH_LONG).show();
         pendingReminderPlan = null;
         pendingReminderDeparture = null;
     }
@@ -1146,9 +1350,7 @@ public final class MainActivity extends android.app.Activity {
                         updated.removeIf(current -> current.id().equals(item.id()));
                         updated.add(item);
                     }
-                    if (repository.save(updated)) {
-                        plans.clear(); plans.addAll(updated);
-                        NextDepartureWidget.updateAll(this);
+                    if (saveAndApply(updated)) {
                         Toast.makeText(this, "読み込みました", Toast.LENGTH_SHORT).show();
                         showSettings();
                     }
@@ -1175,8 +1377,7 @@ public final class MainActivity extends android.app.Activity {
                 .setNegativeButton("キャンセル", null)
                 .setPositiveButton("戻す", (dialog, which) -> {
                     if (repository.restoreAutomaticBackup()) {
-                        plans.clear(); plans.addAll(repository.load());
-                        NextDepartureWidget.updateAll(this);
+                        applyPlans(repository.load());
                         showSettings();
                     } else Toast.makeText(this, "戻せるデータがありません", Toast.LENGTH_LONG).show();
                 }).show();
@@ -1192,15 +1393,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void duplicateRoute(RoutePlan source) {
-        RoutePlan copy = new RoutePlan(null, source.direction(), source.mode(), source.routeName() + " コピー",
-                source.stopName(), source.destination(), source.walkMinutes(), source.rideMinutes(),
-                source.finalWalkMinutes(), source.enabled(), source.weekdayTimes(), source.weekendTimes(),
-                source.holidayTimes(), source.notes(), source.validUntil(), System.currentTimeMillis());
+        RoutePlan copy = source.duplicate(source.routeName() + " コピー");
         List<RoutePlan> updated = new ArrayList<>(plans);
         updated.add(copy);
-        if (repository.save(updated)) {
-            plans.clear(); plans.addAll(updated);
-            NextDepartureWidget.updateAll(this);
+        if (saveAndApply(updated)) {
             Toast.makeText(this, "複製しました", Toast.LENGTH_SHORT).show();
             showForm(copy);
         }
@@ -1215,10 +1411,223 @@ public final class MainActivity extends android.app.Activity {
                 "サンプル駅", "目的地方面", 7, 24, 4, true, times, times, times,
                 "これはサンプルです。編集してお使いください", LocalDate.now().plusMonths(3), System.currentTimeMillis());
         List<RoutePlan> updated = new ArrayList<>(plans); updated.add(sample);
-        if (repository.save(updated)) {
-            plans.clear(); plans.addAll(updated); NextDepartureWidget.updateAll(this); showDashboard();
+        if (saveAndApply(updated)) {
+            showDashboard();
         }
     }
+
+    private boolean saveAndApply(List<RoutePlan> updated) {
+        if (!repository.save(updated)) return false;
+        applyPlans(updated);
+        return true;
+    }
+
+    private void applyPlans(List<RoutePlan> updated) {
+        plans.clear();
+        plans.addAll(updated);
+        NextDepartureWidget.updateAll(this);
+    }
+
+    private void fetchOfficialTimetableIntoForm(
+            String sourceUrl, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
+            Button action, Runnable onSuccess
+    ) {
+        if (!hasUsableNetwork()) {
+            Toast.makeText(this,
+                    "通信できないため取得できません。入力済みの時刻表は変更していません。",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        action.setEnabled(false);
+        action.setText("公式サイトから取得中…");
+        officialTimetableExecutor.execute(() -> {
+            try {
+                OfficialTimetableFetcher.FetchResult result = new OfficialTimetableFetcher().fetch(sourceUrl);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    OfficialTimetableParser.Timetable timetable = result.timetable();
+                    weekdayInput.setText(times(timetable.weekdayTimes()));
+                    weekendInput.setText(times(timetable.weekendTimes()));
+                    holidayInput.setText(times(timetable.holidayTimes()));
+                    onSuccess.run();
+                    action.setEnabled(true);
+                    action.setText("公式サイトから時刻表を再取得");
+                    Toast.makeText(this, "公式サイトから時刻表を取得しました。内容を確認して保存してください。",
+                            Toast.LENGTH_LONG).show();
+                });
+            } catch (OfficialTimetableFetcher.FetchException error) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    action.setEnabled(true);
+                    action.setText("公式サイトから時刻表を取得");
+                    Toast.makeText(this, error.getMessage() + "。入力済みの時刻表は変更していません。",
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+    }
+
+    private void refreshStaleOfficialTimetables() {
+        long now = System.currentTimeMillis();
+        List<String> staleIds = new ArrayList<>();
+        for (RoutePlan plan : plans) {
+            if (plan.hasOfficialTimetableSource() && officialTimetableRefreshIsDue(plan, now)) {
+                staleIds.add(plan.id());
+            }
+        }
+        refreshOfficialTimetables(staleIds, false);
+    }
+
+    private boolean officialTimetableRefreshIsDue(RoutePlan plan, long now) {
+        long lastAttempt = Math.max(plan.officialTimetableFetchedAtEpochMillis(),
+                plan.officialTimetableAttemptedAtEpochMillis());
+        return lastAttempt == 0 || now - lastAttempt >= OFFICIAL_TIMETABLE_REFRESH_INTERVAL_MILLIS;
+    }
+
+    private void refreshOfficialTimetables(List<String> requestedIds, boolean userRequested) {
+        if (requestedIds == null || requestedIds.isEmpty()) {
+            if (userRequested) {
+                Toast.makeText(this, "公式時刻表ページを設定した路線がありません", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (!hasUsableNetwork()) {
+            if (userRequested) {
+                Toast.makeText(this,
+                        "通信できないため更新できません。保存済みの時刻表はそのまま使用します。",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+
+        List<OfficialRefreshRequest> requests = new ArrayList<>();
+        for (String id : requestedIds) {
+            RoutePlan plan = findPlan(id);
+            if (plan == null || !plan.hasOfficialTimetableSource()
+                    || refreshingOfficialTimetableIds.contains(plan.id())) continue;
+            refreshingOfficialTimetableIds.add(plan.id());
+            requests.add(new OfficialRefreshRequest(plan.id(), plan.officialTimetableUrl(),
+                    plan.updatedAtEpochMillis()));
+        }
+        if (requests.isEmpty()) {
+            if (userRequested) {
+                Toast.makeText(this, "公式時刻表を取得中です", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        refreshVisibleOfficialTimetableState();
+
+        officialTimetableExecutor.execute(() -> {
+            OfficialTimetableFetcher fetcher = new OfficialTimetableFetcher();
+            List<OfficialRefreshOutcome> outcomes = new ArrayList<>();
+            for (OfficialRefreshRequest request : requests) {
+                try {
+                    OfficialTimetableFetcher.FetchResult result = fetcher.fetch(request.sourceUrl());
+                    outcomes.add(new OfficialRefreshOutcome(request, result.timetable(), ""));
+                } catch (OfficialTimetableFetcher.FetchException error) {
+                    outcomes.add(new OfficialRefreshOutcome(request, null, error.getMessage()));
+                }
+            }
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                applyOfficialTimetableRefreshOutcomes(outcomes, userRequested);
+            });
+        });
+    }
+
+    private void applyOfficialTimetableRefreshOutcomes(
+            List<OfficialRefreshOutcome> outcomes, boolean userRequested
+    ) {
+        List<RoutePlan> updated = new ArrayList<>(plans);
+        int successCount = 0;
+        int failureCount = 0;
+        boolean changed = false;
+        long attemptedAt = System.currentTimeMillis();
+        for (OfficialRefreshOutcome outcome : outcomes) {
+            refreshingOfficialTimetableIds.remove(outcome.request().planId());
+            int index = indexOfOrMinusOne(updated, outcome.request().planId());
+            if (index < 0) continue;
+            RoutePlan current = updated.get(index);
+            if (!current.officialTimetableUrl().equals(outcome.request().sourceUrl())
+                    || current.updatedAtEpochMillis() != outcome.request().updatedAtEpochMillis()) {
+                continue;
+            }
+            if (outcome.timetable() != null) {
+                OfficialTimetableParser.Timetable timetable = outcome.timetable();
+                updated.set(index, current.withFetchedOfficialTimetable(timetable.weekdayTimes(),
+                        timetable.weekendTimes(), timetable.holidayTimes(), attemptedAt));
+                successCount++;
+            } else {
+                updated.set(index, current.withOfficialTimetableFetchFailure(attemptedAt, outcome.error()));
+                failureCount++;
+            }
+            changed = true;
+        }
+
+        boolean saved = !changed || saveAndApply(updated);
+        if (!saved) {
+            Toast.makeText(this, "取得結果を端末に保存できませんでした", Toast.LENGTH_LONG).show();
+            successCount = 0;
+            failureCount = outcomes.size();
+        }
+        refreshVisibleOfficialTimetableState();
+        if (userRequested) {
+            if (successCount > 0 && failureCount == 0) {
+                Toast.makeText(this, "公式時刻表を" + successCount + "件更新しました", Toast.LENGTH_SHORT).show();
+            } else if (successCount > 0) {
+                Toast.makeText(this, "" + successCount + "件更新しました。失敗した路線は保存済みの時刻表を使用します。",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, "更新できませんでした。保存済みの時刻表は変更していません。",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void refreshVisibleOfficialTimetableState() {
+        if (screen == Screen.TIMETABLE && selectedPlan != null) {
+            RoutePlan current = findPlan(selectedPlan.id());
+            if (current != null) {
+                selectedPlan = current;
+                showTimetableFor(current, timetableScheduleType);
+            }
+        } else if (screen == Screen.SETTINGS) {
+            showSettings();
+        } else if (screen == Screen.DASHBOARD) {
+            showDashboard();
+        }
+    }
+
+    private boolean hasUsableNetwork() {
+        ConnectivityManager manager = getSystemService(ConnectivityManager.class);
+        if (manager == null) return false;
+        Network active = manager.getActiveNetwork();
+        if (active == null) return false;
+        NetworkCapabilities capabilities = manager.getNetworkCapabilities(active);
+        return capabilities != null
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    }
+
+    private RoutePlan findPlan(String id) {
+        for (RoutePlan plan : plans) if (plan.id().equals(id)) return plan;
+        return null;
+    }
+
+    private int indexOfOrMinusOne(List<RoutePlan> values, String id) {
+        for (int index = 0; index < values.size(); index++) {
+            if (values.get(index).id().equals(id)) return index;
+        }
+        return -1;
+    }
+
+    private record OfficialRefreshRequest(String planId, String sourceUrl, long updatedAtEpochMillis) {}
+
+    private record OfficialRefreshOutcome(
+            OfficialRefreshRequest request,
+            OfficialTimetableParser.Timetable timetable,
+            String error
+    ) {}
 
     private String joinDates(Set<LocalDate> dates) {
         List<LocalDate> sorted = new ArrayList<>(dates);
@@ -1289,7 +1698,7 @@ public final class MainActivity extends android.app.Activity {
                         List<LocalTime> combined = new ArrayList<>(ScheduleEngine.parseTimes(target.getText().toString()));
                         combined.addAll(generated);
                         combined = new ArrayList<>(new java.util.TreeSet<>(combined));
-                        target.setText(joinTimes(combined));
+                        target.setText(times(combined));
                     } catch (RuntimeException error) {
                         Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
                     }
@@ -1331,236 +1740,6 @@ public final class MainActivity extends android.app.Activity {
         }
     }
 
-    private String joinTimes(List<LocalTime> times) {
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < times.size(); i++) {
-            if (i > 0) result.append(i % 6 == 0 ? '\n' : ' ');
-            result.append(times.get(i).format(timeFormat));
-        }
-        return result.toString();
-    }
-
-    private String formatDate(LocalDate date) {
-        return date.getMonthValue() + "月" + date.getDayOfMonth() + "日（"
-                + date.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.JAPAN) + "）";
-    }
-
-    private void addField(LinearLayout parent, String label, View input, String hint) {
-        TextView labelView = text(label, 14, INK, Typeface.BOLD);
-        labelView.setPadding(0, 0, 0, dp(7));
-        if (input.getId() != View.NO_ID) labelView.setLabelFor(input.getId());
-        parent.addView(labelView);
-        parent.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        if (hint != null) {
-            TextView hintView = text(hint, 14, MUTED, Typeface.NORMAL);
-            hintView.setPadding(0, dp(5), 0, 0);
-            parent.addView(hintView);
-        }
-        parent.addView(space(16));
-    }
-
-    private EditText input(String hint, int inputType, boolean multiline) {
-        EditText input = new EditText(this);
-        input.setTextSize(16);
-        input.setTextColor(INK);
-        input.setHintTextColor(HINT);
-        input.setHint(hint);
-        input.setInputType(inputType | (multiline ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
-        input.setGravity(multiline ? Gravity.TOP : Gravity.CENTER_VERTICAL);
-        input.setPadding(dp(14), multiline ? dp(12) : 0, dp(14), multiline ? dp(12) : 0);
-        input.setMinHeight(dp(56));
-        input.setBackgroundTintList(null);
-        input.setBackground(focusableInputBackground(13));
-        if (multiline) {
-            input.setMinLines(3);
-            input.setMaxLines(7);
-        } else {
-            input.setSingleLine(true);
-        }
-        return input;
-    }
-
-    private Spinner spinner(String[] choices) {
-        Spinner spinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, choices) {
-            @Override public View getView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTextColor(INK);
-                view.setTextSize(16);
-                view.setPadding(dp(12), 0, dp(12), 0);
-                return view;
-            }
-
-            @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
-                view.setTextColor(INK);
-                view.setTextSize(16);
-                view.setBackgroundColor(SURFACE);
-                view.setMinHeight(dp(52));
-                view.setGravity(Gravity.CENTER_VERTICAL);
-                view.setPadding(dp(16), dp(8), dp(16), dp(8));
-                return view;
-            }
-        };
-        spinner.setAdapter(adapter);
-        spinner.setPadding(dp(10), 0, dp(10), 0);
-        spinner.setMinimumHeight(dp(56));
-        spinner.setBackgroundTintList(null);
-        spinner.setBackground(focusableInputBackground(13));
-        return spinner;
-    }
-
-    private Button primaryButton(String label) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextSize(16);
-        button.setTextColor(Color.WHITE);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinHeight(dp(54));
-        button.setLetterSpacing(0.02f);
-        button.setBackgroundTintList(null);
-        button.setBackground(interactiveBackground(BRAND, 16, 0, 0));
-        button.setElevation(dp(2));
-        return button;
-    }
-
-    private Button segmentButton(String label, boolean selected) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextSize(15);
-        button.setTextColor(selected ? WHITE : MUTED);
-        button.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
-        button.setAllCaps(false);
-        button.setPadding(dp(8), 0, dp(8), 0);
-        button.setMinHeight(dp(52));
-        button.setBackgroundTintList(null);
-        button.setBackground(interactiveBackground(selected ? BRAND : Color.TRANSPARENT,
-                14, 0, 0));
-        button.setElevation(0);
-        button.setContentDescription(label + (selected ? "、選択中" : ""));
-        button.setSelected(selected);
-        return button;
-    }
-
-    private Button smallButton(String label) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(BRAND_DARK);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinWidth(dp(62));
-        button.setMinHeight(dp(48));
-        button.setPadding(dp(10), 0, dp(10), 0);
-        button.setBackgroundTintList(null);
-        button.setBackground(interactiveBackground(SURFACE_VARIANT, 13, 0, 0));
-        return button;
-    }
-
-    private TextView pill(String label, int foreground, int background) {
-        TextView view = text(label, 13, foreground, Typeface.BOLD);
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(10), dp(5), dp(10), dp(5));
-        view.setMinHeight(dp(28));
-        view.setBackground(roundRect(background, 30, 0, 0));
-        return view;
-    }
-
-    private TextView text(String value, float size, int color, int style) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        view.setTypeface(Typeface.DEFAULT, style);
-        view.setIncludeFontPadding(true);
-        view.setLineSpacing(dp(1), 1.04f);
-        return view;
-    }
-
-    private TextView centerText(String value, float size, int color, int style) {
-        TextView view = text(value, size, color, style);
-        view.setGravity(Gravity.CENTER);
-        return view;
-    }
-
-    private LinearLayout vertical(int background) {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(background);
-        return layout;
-    }
-
-    private LinearLayout horizontal(int gravity) {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.HORIZONTAL);
-        layout.setGravity(gravity);
-        return layout;
-    }
-
-    private Space space(int heightDp) {
-        Space space = new Space(this);
-        space.setLayoutParams(new LinearLayout.LayoutParams(dp(1), dp(heightDp)));
-        return space;
-    }
-
-    private GradientDrawable roundRect(int color, int radiusDp, int strokeColor, int strokeDp) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(color);
-        drawable.setCornerRadius(dp(radiusDp));
-        if (strokeDp > 0) drawable.setStroke(dp(strokeDp), strokeColor);
-        return drawable;
-    }
-
-    private GradientDrawable roundGradient(int start, int end, int radiusDp) {
-        GradientDrawable drawable = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR, new int[]{start, end});
-        drawable.setCornerRadius(dp(radiusDp));
-        return drawable;
-    }
-
-    private Drawable focusableInputBackground(int radiusDp) {
-        StateListDrawable states = new StateListDrawable();
-        states.addState(new int[]{android.R.attr.state_focused},
-                roundRect(SURFACE, radiusDp, BRAND, 2));
-        states.addState(new int[]{android.R.attr.state_enabled},
-                roundRect(SURFACE, radiusDp, CONTROL, 1));
-        states.addState(new int[]{}, roundRect(CANVAS, radiusDp, CONTROL, 1));
-        return states;
-    }
-
-    private Drawable interactiveBackground(int color, int radiusDp, int strokeColor, int strokeDp) {
-        int focusColor = color == BRAND || color == BRAND_DARK ? WHITE : BRAND;
-        StateListDrawable content = new StateListDrawable();
-        content.addState(new int[]{android.R.attr.state_focused},
-                roundRect(color, radiusDp, focusColor, 2));
-        content.addState(new int[]{}, roundRect(color, radiusDp, strokeColor, strokeDp));
-        GradientDrawable mask = roundRect(WHITE, radiusDp, 0, 0);
-        return new RippleDrawable(ColorStateList.valueOf(0x33006B4F), content, mask);
-    }
-
-    private int withAlpha(int color, int alpha) {
-        return (color & 0x00FFFFFF) | ((alpha & 0xFF) << 24);
-    }
-
-    private boolean isConstrainedContent() {
-        Configuration configuration = getResources().getConfiguration();
-        return configuration.screenWidthDp < 380 || configuration.fontScale >= 1.2f;
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private void hideKeyboard() {
-        View focused = getCurrentFocus();
-        if (focused != null) {
-            ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE))
-                    .hideSoftInputFromWindow(focused.getWindowToken(), 0);
-        }
-    }
-
     private void setScreenContent(View content) {
         FrameLayout outer = new FrameLayout(this);
         outer.setBackgroundColor(CANVAS);
@@ -1579,7 +1758,4 @@ public final class MainActivity extends android.app.Activity {
         if (android.os.Build.VERSION.SDK_INT >= 30) SystemBarInsetsApplier.install(outer);
     }
 
-    private void markAsHeading(TextView view) {
-        if (android.os.Build.VERSION.SDK_INT >= 28) view.setAccessibilityHeading(true);
-    }
 }

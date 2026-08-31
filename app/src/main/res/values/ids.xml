@@ -8,6 +8,7 @@
     <item name="form_walk" type="id" />
     <item name="form_ride" type="id" />
     <item name="form_final_walk" type="id" />
+    <item name="form_official_timetable_url" type="id" />
     <item name="form_weekday" type="id" />
     <item name="form_weekend" type="id" />
     <item name="form_holiday" type="id" />

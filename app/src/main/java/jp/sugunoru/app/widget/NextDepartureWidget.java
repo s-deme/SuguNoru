@@ -14,11 +14,10 @@ import jp.sugunoru.app.data.AppPreferences;
 import jp.sugunoru.app.data.RouteRepository;
 import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
+import jp.sugunoru.app.ui.ScheduleDisplayFormatter;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Locale;
 
 public final class NextDepartureWidget extends AppWidgetProvider {
     public static final String ACTION_REFRESH = "jp.sugunoru.app.WIDGET_REFRESH";
@@ -53,13 +52,12 @@ public final class NextDepartureWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.widget_wait, "タップして開く");
         } else {
             ScheduleEngine.RouteOption option = options.get(0);
-            DateTimeFormatter format = DateTimeFormatter.ofPattern("HH:mm", Locale.JAPAN);
-            views.setTextViewText(R.id.widget_time, option.departure().at().format(format));
+            views.setTextViewText(R.id.widget_time, ScheduleDisplayFormatter.time(option.departure().at()));
             views.setTextViewText(R.id.widget_route,
                     option.plan().routeName() + "  " + option.plan().stopName());
             views.setTextViewText(R.id.widget_wait,
                     ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "  ·  "
-                            + option.estimatedArrival().format(format) + " 到着見込み");
+                            + ScheduleDisplayFormatter.time(option.estimatedArrival()) + " 到着見込み");
         }
         Intent launch = new Intent(context, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
