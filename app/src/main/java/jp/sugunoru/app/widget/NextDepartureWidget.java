@@ -56,8 +56,7 @@ public final class NextDepartureWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.widget_route,
                     option.plan().routeName() + "  " + option.plan().stopName());
             views.setTextViewText(R.id.widget_wait,
-                    ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "  ·  "
-                            + ScheduleDisplayFormatter.time(option.estimatedArrival()) + " 到着見込み");
+                    ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "  ·  次の便");
         }
         Intent launch = new Intent(context, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

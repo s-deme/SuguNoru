@@ -24,6 +24,8 @@ public final class RoutePlan {
     private final String routeName;
     private final String stopName;
     private final String destination;
+    // Retained only to read and write existing backups. New registrations store zero and
+    // ScheduleEngine no longer uses these values when finding the next departure.
     private final int walkMinutes;
     private final int rideMinutes;
     private final int finalWalkMinutes;

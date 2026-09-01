@@ -9,8 +9,8 @@ import java.util.List;
  * A small, offline-first directory used to prefill common JR East and Toei Bus registrations.
  *
  * <p>It deliberately contains no timetable data and does not call an operator's private API.
- * A user can still adjust every value in the registration form and optionally attach the
- * operator's official timetable URL.
+ * Route, stop, and destination are selected from this directory; the optional official
+ * timetable URL remains part of the timetable workflow.
  */
 public final class TransitCatalog {
     public enum Provider {

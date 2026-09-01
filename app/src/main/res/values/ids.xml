@@ -1,17 +1,6 @@
 <resources>
-    <item name="form_direction" type="id" />
-    <item name="form_mode" type="id" />
-    <item name="form_enabled" type="id" />
-    <item name="form_route" type="id" />
-    <item name="form_stop" type="id" />
-    <item name="form_destination" type="id" />
-    <item name="form_walk" type="id" />
-    <item name="form_ride" type="id" />
-    <item name="form_final_walk" type="id" />
     <item name="form_official_timetable_url" type="id" />
     <item name="form_weekday" type="id" />
     <item name="form_weekend" type="id" />
     <item name="form_holiday" type="id" />
-    <item name="form_valid_until" type="id" />
-    <item name="form_notes" type="id" />
 </resources>

@@ -3,8 +3,6 @@ package jp.sugunoru.app;
 import android.app.AlertDialog;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
-import android.app.TimePickerDialog;
-import android.app.DatePickerDialog;
 import android.appwidget.AppWidgetManager;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
@@ -34,10 +32,8 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Space;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.CheckBox;
 
 import jp.sugunoru.app.data.RouteRepository;
 import jp.sugunoru.app.data.AppPreferences;
@@ -70,7 +66,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.clock;
 import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.date;
 import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.time;
 import static jp.sugunoru.app.ui.ScheduleDisplayFormatter.times;
@@ -92,9 +87,6 @@ public final class MainActivity extends StyledActivity {
     private RoutePlan.Direction direction = RoutePlan.Direction.OUTBOUND;
     private Screen screen = Screen.DASHBOARD;
     private RoutePlan selectedPlan;
-    private TextView liveClock;
-    private TextView liveDate;
-    private LocalDateTime previewTime;
     private RoutePlan pendingReminderPlan;
     private ScheduleEngine.Departure pendingReminderDeparture;
     private int lastRenderedMinute = -1;
@@ -102,9 +94,9 @@ public final class MainActivity extends StyledActivity {
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
-            if (screen == Screen.DASHBOARD && liveClock != null) {
+            if (screen == Screen.DASHBOARD) {
                 LocalDateTime now = LocalDateTime.now();
-                if (previewTime == null && lastRenderedMinute != now.getMinute()) {
+                if (lastRenderedMinute != now.getMinute()) {
                     showDashboard();
                 }
             }
@@ -124,8 +116,6 @@ public final class MainActivity extends StyledActivity {
         if (state == null) {
             showDashboard();
         } else {
-            String preview = state.getString("previewTime");
-            if (preview != null) previewTime = LocalDateTime.parse(preview);
             String selectedId = state.getString("selectedPlanId");
             if (selectedId != null) {
                 for (RoutePlan plan : plans) if (plan.id().equals(selectedId)) selectedPlan = plan;
@@ -162,7 +152,6 @@ public final class MainActivity extends StyledActivity {
     @Override protected void onSaveInstanceState(Bundle outState) {
         outState.putString("screen", screen.name());
         if (selectedPlan != null) outState.putString("selectedPlanId", selectedPlan.id());
-        if (previewTime != null) outState.putString("previewTime", previewTime.toString());
         outState.putInt("scheduleType", timetableScheduleType);
         super.onSaveInstanceState(outState);
     }
@@ -237,32 +226,15 @@ public final class MainActivity extends StyledActivity {
         LinearLayout root = vertical(CANVAS);
         root.setPadding(dp(18), dp(12), dp(18), dp(16));
 
-        root.addView(dashboardHeader());
-        root.addView(space(16));
-        root.addView(nowCard());
-        root.addView(space(14));
-        root.addView(directionSwitch());
-        root.addView(space(18));
-
-        LinearLayout headingRow = horizontal(Gravity.CENTER_VERTICAL);
-        TextView heading = text(direction == RoutePlan.Direction.OUTBOUND ? "出かける便" : "帰る便",
-                19, INK, Typeface.BOLD);
-        markAsHeading(heading);
-        headingRow.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        int activeCount = 0;
-        for (RoutePlan plan : plans) if (plan.enabled() && plan.direction() == direction) activeCount++;
-        headingRow.addView(pill(activeCount + "件", MUTED, SURFACE_VARIANT));
-        root.addView(headingRow);
-        TextView help = text("到着が早い順。徒歩と乗車時間を含めて比較しています", 14, MUTED, Typeface.NORMAL);
-        help.setPadding(0, dp(4), 0, dp(11));
-        root.addView(help);
+        root.addView(dashboardNavigation());
+        root.addView(space(12));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout list = vertical(Color.TRANSPARENT);
         list.setPadding(0, 0, 0, dp(10));
 
-        LocalDateTime reference = referenceTime();
+        LocalDateTime reference = LocalDateTime.now();
         lastRenderedMinute = reference.getMinute();
         List<ScheduleEngine.RouteOption> options = ScheduleEngine.compare(
                 plans, direction, reference, appPreferences.holidays());
@@ -270,7 +242,7 @@ public final class MainActivity extends StyledActivity {
             list.addView(emptyState());
         } else {
             for (int i = 0; i < options.size(); i++) {
-                list.addView(routeCard(options.get(i), i == 0, reference));
+                list.addView(routeCard(options.get(i), reference));
                 list.addView(space(10));
             }
         }
@@ -278,73 +250,25 @@ public final class MainActivity extends StyledActivity {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        Button add = primaryButton("＋  路線を追加");
+        Button add = primaryButton("＋  "
+                + (direction == RoutePlan.Direction.OUTBOUND ? "出かける路線を追加" : "帰る路線を追加"));
         add.setOnClickListener(v -> showForm(null));
         root.addView(add);
         setScreenContent(root);
     }
 
-    private View dashboardHeader() {
+    private View dashboardNavigation() {
         LinearLayout row = horizontal(Gravity.CENTER_VERTICAL);
-        TextView mark = text("す", 19, Color.WHITE, Typeface.BOLD);
-        mark.setGravity(Gravity.CENTER);
-        mark.setBackground(roundGradient(HERO_START, HERO_END, 15));
-        mark.setElevation(dp(2));
-        row.addView(mark, new LinearLayout.LayoutParams(dp(44), dp(44)));
-
-        LinearLayout names = vertical(Color.TRANSPARENT);
-        names.setPadding(dp(12), 0, 0, 0);
-        names.addView(text("すぐのる", 21, INK, Typeface.BOLD));
-        names.addView(text("次に乗れる便を、ひと目で", 13, MUTED, Typeface.NORMAL));
-        row.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(directionSwitch(), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button settingsButton = smallButton("設定");
         settingsButton.setContentDescription("設定とバックアップを開く");
         settingsButton.setOnClickListener(v -> showSettings());
-        row.addView(settingsButton);
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        settingsParams.setMarginStart(dp(8));
+        row.addView(settingsButton, settingsParams);
         return row;
-    }
-
-    private View nowCard() {
-        LinearLayout card = vertical(Color.TRANSPARENT);
-        card.setPadding(dp(20), dp(17), dp(20), dp(12));
-        card.setBackground(roundGradient(HERO_START, HERO_END, 24));
-        card.setElevation(dp(2));
-
-        TextView context = text(previewTime == null ? "いまの時刻" : "指定日時で試算中", 13, WHITE, Typeface.BOLD);
-        context.setLetterSpacing(0.04f);
-        card.addView(context);
-
-        LinearLayout top = horizontal(Gravity.BOTTOM);
-        if (isConstrainedContent()) top.setOrientation(LinearLayout.VERTICAL);
-        LocalDateTime shown = referenceTime();
-        liveClock = text(clock(shown), 44, Color.WHITE, Typeface.BOLD);
-        liveClock.setFontFeatureSettings("tnum");
-        liveClock.setLetterSpacing(-0.03f);
-        top.addView(liveClock, isConstrainedContent()
-                ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        liveDate = text(date(shown.toLocalDate()), 14, WHITE, Typeface.NORMAL);
-        liveDate.setPadding(isConstrainedContent() ? 0 : dp(10), 0, 0, dp(8));
-        top.addView(liveDate);
-        card.addView(top);
-
-        TextView simulate = text(previewTime == null ? "別の日時で調べる  ›" : "現在時刻に戻す  ×",
-                14, WHITE, Typeface.BOLD);
-        simulate.setPadding(dp(12), 0, dp(12), 0);
-        simulate.setMinHeight(dp(48));
-        simulate.setGravity(Gravity.CENTER_VERTICAL);
-        simulate.setFocusable(true);
-        simulate.setBackground(interactiveBackground(0x1FFFFFFF, 13, 0x55FFFFFF, 1));
-        simulate.setOnClickListener(v -> {
-            if (previewTime != null) {
-                previewTime = null;
-                showDashboard();
-            } else {
-                choosePreviewDateTime();
-            }
-        });
-        card.addView(simulate);
-        return card;
     }
 
     private View directionSwitch() {
@@ -399,41 +323,40 @@ public final class MainActivity extends StyledActivity {
         card.addView(icon);
         card.addView(space(14));
         card.addView(centerText(waitingForOfficialTimetable ? "時刻表を取得待ちです"
-                        : hasRoutesInDirection ? (hasActiveRoute ? "次の便が見つかりません" : "比較対象がありません")
+                        : hasRoutesInDirection ? (hasActiveRoute ? "次の便が見つかりません" : "使える路線がありません")
                         : "まだ路線がありません",
                 19, INK, Typeface.BOLD));
         TextView body = centerText(waitingForOfficialTimetable
-                        ? "公式サイトから時刻表を取得すると\nすぐに次の便を比較できます。"
+                        ? "公式サイトから時刻表を取得すると\n次の便を表示できます。"
                         : hasRoutesInDirection ? (hasActiveRoute
                                 ? "時刻表の確認や公式サイトからの更新を\n行ってください。"
-                                : "この場面の登録はすべて無効です。\n設定から比較対象に戻せます。")
-                        : "よく使う駅・停留所と時刻表を登録すると\n次に乗れる便をすぐ比較できます。",
+                                : "この場面の路線はすべて停止中です。\n路線を編集して使える状態に戻してください。")
+                        : "よく使う駅・停留所と時刻表を登録すると\n次に乗れる便をすぐ表示できます。",
                 14, MUTED, Typeface.NORMAL);
         body.setLineSpacing(dp(3), 1f);
         body.setPadding(0, dp(8), 0, 0);
         card.addView(body);
-        Button sample = smallButton(waitingForOfficialTimetable ? "公式時刻表を取得"
-                : hasRoutesInDirection ? "設定で登録を管理" : "サンプルで試す");
-        sample.setMinHeight(dp(48));
-        sample.setOnClickListener(v -> {
+        Button action = smallButton(waitingForOfficialTimetable ? "公式時刻表を取得"
+                : hasRoutesInDirection ? "設定を開く" : "路線を追加");
+        action.setMinHeight(dp(48));
+        action.setOnClickListener(v -> {
             if (waitingForOfficialTimetable) refreshOfficialTimetables(missingOfficialTimetableIds, true);
             else if (hasRoutesInDirection) showSettings();
-            else installSampleRoutes();
+            else showForm(null);
         });
-        card.addView(sample);
+        card.addView(action);
         return card;
     }
 
-    private View routeCard(ScheduleEngine.RouteOption option, boolean fastest, LocalDateTime reference) {
+    private View routeCard(ScheduleEngine.RouteOption option, LocalDateTime reference) {
         RoutePlan plan = option.plan();
         List<ScheduleEngine.Departure> next = ScheduleEngine.nextDepartures(
                 plan, reference, 3, appPreferences.holidays());
         LinearLayout card = vertical(Color.TRANSPARENT);
         card.setPadding(dp(17), dp(15), dp(17), dp(13));
-        card.setBackground(roundRect(fastest ? BRAND_SURFACE : SURFACE, 22,
-                fastest ? BRAND : OUTLINE, fastest ? 2 : 1));
+        card.setBackground(roundRect(SURFACE, 22, OUTLINE, 1));
         card.setForeground(new RippleDrawable(ColorStateList.valueOf(withAlpha(BRAND, 0x1F)), null, null));
-        card.setElevation(fastest ? dp(2) : dp(1));
+        card.setElevation(dp(1));
         card.setOnClickListener(v -> showTimetable(plan));
         card.setFocusable(true);
         card.setContentDescription(plan.routeName() + "、" + plan.stopName() + "から"
@@ -447,7 +370,6 @@ public final class MainActivity extends StyledActivity {
         TextView route = text(plan.routeName(), 14, MUTED, Typeface.BOLD);
         route.setPadding(dp(8), 0, 0, 0);
         meta.addView(route, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        if (fastest) meta.addView(pill("最速", Color.WHITE, BRAND));
         card.addView(meta);
 
         TextView title = text(plan.stopName() + "  →  " + plan.destination(), 18, INK, Typeface.BOLD);
@@ -469,40 +391,7 @@ public final class MainActivity extends StyledActivity {
         waitParams.setMargins(0, dp(5), 0, 0);
         timing.addView(wait, waitParams);
         card.addView(timing);
-
-        String detail = "徒歩 " + plan.walkMinutes() + "分  ・  乗車 " + plan.rideMinutes()
-                + "分" + (plan.finalWalkMinutes() > 0 ? "  ・  降車後 " + plan.finalWalkMinutes() + "分" : "");
-        TextView details = text(detail, 14, MUTED, Typeface.NORMAL);
-        details.setPadding(0, dp(8), 0, dp(10));
-        card.addView(details);
-
-        LinearLayout arrival = horizontal(Gravity.CENTER_VERTICAL);
-        arrival.setPadding(dp(13), dp(10), dp(13), dp(10));
-        arrival.setBackground(roundRect(BRAND_SOFT, 15, 0, 0));
-        arrival.addView(text("到着見込み", 14, BRAND_DARK, Typeface.BOLD),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView arrivalTime = text(time(option.estimatedArrival()), 22, BRAND_DARK, Typeface.BOLD);
-        arrivalTime.setFontFeatureSettings("tnum");
-        arrival.addView(arrivalTime);
-        card.addView(arrival);
         card.addView(space(10));
-        if (!plan.notes().isEmpty()) {
-            TextView notes = text("メモ  " + plan.notes(), 14, INK, Typeface.NORMAL);
-            notes.setPadding(0, 0, 0, dp(9));
-            card.addView(notes);
-        }
-        if (plan.validUntil() != null) {
-            long days = java.time.temporal.ChronoUnit.DAYS.between(reference.toLocalDate(), plan.validUntil());
-            if (days <= 30) {
-                String label = days < 0 ? "時刻表の期限切れ" : "時刻表期限まで " + days + "日";
-                TextView expiry = pill(label, days < 0 ? DANGER : AMBER,
-                        days < 0 ? DANGER_SOFT : AMBER_SOFT);
-                LinearLayout.LayoutParams expiryParams = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                expiryParams.setMargins(0, 0, 0, dp(9));
-                card.addView(expiry, expiryParams);
-            }
-        }
 
         View divider = new View(this);
         divider.setBackgroundColor(LINE);
@@ -529,9 +418,9 @@ public final class MainActivity extends StyledActivity {
         LinearLayout actions = horizontal(Gravity.END | Gravity.CENTER_VERTICAL);
         actions.setPadding(0, dp(6), 0, 0);
         Button alert = smallButton("通知");
-        alert.setContentDescription("この便に間に合う出発時刻を通知");
+        alert.setContentDescription("次の便の出発時刻を通知");
         if (!next.isEmpty()) alert.setOnClickListener(v -> requestReminder(plan, next.get(0)));
-        if (previewTime == null) actions.addView(alert);
+        actions.addView(alert);
         Button edit = smallButton("編集");
         edit.setOnClickListener(v -> showForm(plan));
         actions.addView(edit);
@@ -546,71 +435,40 @@ public final class MainActivity extends StyledActivity {
         selectedPlan = existing;
 
         LinearLayout root = vertical(CANVAS);
-        root.addView(pageHeader(existing == null ? "路線を登録" : "登録を編集", this::showDashboard,
+        root.addView(pageHeader(existing == null
+                        ? (direction == RoutePlan.Direction.OUTBOUND ? "出かける路線を追加" : "帰る路線を追加")
+                        : "路線を変更",
+                this::showDashboard,
                 existing == null ? null : () -> confirmDelete(existing)));
 
         ScrollView scroll = new ScrollView(this);
         LinearLayout form = vertical(Color.TRANSPARENT);
         form.setPadding(dp(18), dp(10), dp(18), dp(28));
 
-        TextView intro = text(existing == null
-                        ? "いつもの乗り場と時刻表を登録すると、乗れる便を自動で比較します。"
-                        : "登録内容を更新すると、ホームの比較結果へすぐ反映されます。",
-                14, BRAND_DARK, Typeface.NORMAL);
-        intro.setPadding(dp(15), dp(13), dp(15), dp(13));
-        intro.setBackground(roundRect(BRAND_SOFT, 16, 0, 0));
-        form.addView(intro);
-        form.addView(space(22));
-        form.addView(formSectionTitle("1", "基本情報", "使う場面と乗車区間"));
+        form.addView(formSectionTitle("1", "路線を選ぶ", "JR東日本または都営バスから選択"));
         form.addView(space(12));
 
-        Spinner directionInput = spinner(new String[]{"出かけるとき", "帰るとき"});
-        directionInput.setId(R.id.form_direction);
-        directionInput.setSelection((existing == null ? direction : existing.direction()) == RoutePlan.Direction.OUTBOUND ? 0 : 1);
-        addField(form, "使う場面", directionInput, "ホーム画面で行き・帰りを切り替えられます");
-
-        Spinner modeInput = spinner(new String[]{"電車", "バス"});
-        modeInput.setId(R.id.form_mode);
-        modeInput.setSelection(existing != null && existing.mode() == RoutePlan.Mode.BUS ? 1 : 0);
-        addField(form, "交通手段", modeInput, null);
-
-        CheckBox enabledInput = new CheckBox(this);
-        enabledInput.setId(R.id.form_enabled);
-        enabledInput.setText("ホームの比較対象にする");
-        enabledInput.setTextColor(INK);
-        enabledInput.setTextSize(16);
-        enabledInput.setMinHeight(dp(52));
-        enabledInput.setChecked(existing == null || existing.enabled());
-        form.addView(enabledInput);
-        form.addView(space(12));
-
-        EditText routeInput = input("例：中央線 快速", InputType.TYPE_CLASS_TEXT, false);
-        routeInput.setId(R.id.form_route);
-        EditText stopInput = input("例：中野駅", InputType.TYPE_CLASS_TEXT, false);
-        stopInput.setId(R.id.form_stop);
-        EditText destinationInput = input("例：東京方面", InputType.TYPE_CLASS_TEXT, false);
-        destinationInput.setId(R.id.form_destination);
-        EditText walkInput = input("例：8", InputType.TYPE_CLASS_NUMBER, false);
-        walkInput.setId(R.id.form_walk);
-        EditText rideInput = input("例：22", InputType.TYPE_CLASS_NUMBER, false);
-        rideInput.setId(R.id.form_ride);
-        EditText finalWalkInput = input("例：5", InputType.TYPE_CLASS_NUMBER, false);
-        finalWalkInput.setId(R.id.form_final_walk);
+        final RoutePlan.Mode[] selectedMode = {existing == null ? null : existing.mode()};
+        final String[] selectedRoute = {existing == null ? "" : existing.routeName()};
+        final String[] selectedStop = {existing == null ? "" : existing.stopName()};
+        final String[] selectedDestination = {existing == null ? "" : existing.destination()};
+        TextView routeValue = selectedTransitValue(selectedRoute[0]);
+        TextView stopValue = selectedTransitValue(selectedStop[0]);
+        TextView destinationValue = selectedTransitValue(selectedDestination[0]);
 
         LinearLayout catalogCard = vertical(SURFACE_VARIANT);
         catalogCard.setPadding(dp(14), dp(14), dp(14), dp(14));
         catalogCard.setBackground(roundRect(SURFACE_VARIANT, 16, BRAND_DARK, 1));
-        TextView catalogTitle = text("JR東日本・都営バスから選ぶ", 16, INK, Typeface.BOLD);
+        TextView catalogTitle = text("路線・系統を選ぶ", 16, INK, Typeface.BOLD);
         markAsHeading(catalogTitle);
         catalogCard.addView(catalogTitle);
-        TextView catalogHelp = text("路線・系統、駅・停留所、方面の順に選ぶと、下の入力欄へ反映します。"
-                        + "候補外や通過駅は手入力で登録できます。",
+        TextView catalogHelp = text("路線・系統、駅・停留所、方面の順に選択します。",
                 13, MUTED, Typeface.NORMAL);
         catalogHelp.setPadding(0, dp(4), 0, dp(10));
         catalogCard.addView(catalogHelp);
         LinearLayout catalogActions = horizontal(Gravity.CENTER_VERTICAL);
-        Button chooseJr = secondaryButton("JR東日本の駅を選ぶ");
-        Button chooseToei = secondaryButton("都営バスの停留所を選ぶ");
+        Button chooseJr = secondaryButton("JR東日本から選ぶ");
+        Button chooseToei = secondaryButton("都営バスから選ぶ");
         if (isConstrainedContent()) {
             catalogActions.setOrientation(LinearLayout.VERTICAL);
             catalogActions.addView(chooseJr);
@@ -627,48 +485,45 @@ public final class MainActivity extends StyledActivity {
             catalogActions.addView(chooseToei, second);
         }
         catalogCard.addView(catalogActions);
-        TextView catalogStatus = text("選択後も路線名・乗り場・行き先を自由に編集できます。",
+        TextView catalogStatus = text("選択した内容は下に表示されます。",
                 13, BRAND_DARK, Typeface.NORMAL);
         catalogStatus.setPadding(0, dp(10), 0, 0);
         catalogCard.addView(catalogStatus);
         chooseJr.setContentDescription("JR東日本の路線、駅、方面を選ぶ");
         chooseToei.setContentDescription("都営バスの系統、停留所、方面を選ぶ");
         chooseJr.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.JR_EAST,
-                modeInput, routeInput, stopInput, destinationInput, catalogStatus));
+                (service, stop, destination) -> {
+                    selectedMode[0] = service.mode();
+                    selectedRoute[0] = service.displayName();
+                    selectedStop[0] = stop;
+                    selectedDestination[0] = destination;
+                    catalogStatus.setText(R.string.catalog_jr_selected);
+                    catalogStatus.announceForAccessibility("JR東日本の路線を選択しました");
+                    showSelectedTransit(routeValue, stopValue, destinationValue,
+                            selectedRoute[0], selectedStop[0], selectedDestination[0]);
+                }));
         chooseToei.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.TOEI_BUS,
-                modeInput, routeInput, stopInput, destinationInput, catalogStatus));
+                (service, stop, destination) -> {
+                    selectedMode[0] = service.mode();
+                    selectedRoute[0] = service.displayName();
+                    selectedStop[0] = stop;
+                    selectedDestination[0] = destination;
+                    catalogStatus.setText("都営バスを選択しました。");
+                    catalogStatus.announceForAccessibility("都営バスの系統を選択しました");
+                    showSelectedTransit(routeValue, stopValue, destinationValue,
+                            selectedRoute[0], selectedStop[0], selectedDestination[0]);
+                }));
         form.addView(catalogCard);
         form.addView(space(16));
 
-        addField(form, "路線名", routeInput, null);
-        addField(form, "乗る駅・停留所", stopInput, null);
-        addField(form, "行き先", destinationInput, null);
+        form.addView(selectionValue("路線・系統", routeValue));
+        form.addView(space(8));
+        form.addView(selectionValue("乗る駅・停留所", stopValue));
+        form.addView(space(8));
+        form.addView(selectionValue("行き先・方面", destinationValue));
+        form.addView(space(22));
 
-        form.addView(formSectionTitle("2", "所要時間", "乗れる便と到着時刻の計算に使います"));
-        form.addView(space(12));
-
-        LinearLayout durations = horizontal(Gravity.TOP);
-        LinearLayout walkBox = vertical(Color.TRANSPARENT);
-        LinearLayout rideBox = vertical(Color.TRANSPARENT);
-        addField(walkBox, "ここまで徒歩（分）", walkInput, null);
-        addField(rideBox, "乗車時間（分）", rideInput, null);
-        if (isConstrainedContent()) {
-            durations.setOrientation(LinearLayout.VERTICAL);
-            durations.addView(walkBox);
-            durations.addView(rideBox);
-        } else {
-            LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            half.setMarginEnd(dp(6));
-            durations.addView(walkBox, half);
-            LinearLayout.LayoutParams otherHalf = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            otherHalf.setMarginStart(dp(6));
-            durations.addView(rideBox, otherHalf);
-        }
-        form.addView(durations);
-        addField(form, "降りてから目的地まで（分）", finalWalkInput,
-                "最終的な到着時刻の比較に含めます。なければ 0");
-
-        form.addView(formSectionTitle("3", "時刻表", "公式ページから取得し、通信できないときは保存済みのデータを使います"));
+        form.addView(formSectionTitle("2", "時刻表", "公式ページから取得し、通信できないときは保存済みのデータを使います"));
         form.addView(space(12));
 
         EditText officialTimetableUrlInput = input("https://…",
@@ -731,33 +586,11 @@ public final class MainActivity extends StyledActivity {
         addField(form, "祝日の時刻表", holidayInput, "設定画面で登録した祝日に使います。空欄なら曜日どおり");
         addFrequencyBuilder(form, holidayInput, "祝日");
 
-        form.addView(space(6));
-        form.addView(formSectionTitle("4", "補足", "更新期限と乗り場の目印"));
-        form.addView(space(12));
-
-        EditText validUntilInput = input("例：2026-12-31", InputType.TYPE_CLASS_DATETIME, false);
-        validUntilInput.setId(R.id.form_valid_until);
-        addField(form, "時刻表の有効期限（任意）", validUntilInput, "期限30日前から更新忘れを表示します");
-        EditText notesInput = input("例：3番ホーム／南口のバス停", InputType.TYPE_CLASS_TEXT, true);
-        notesInput.setId(R.id.form_notes);
-        notesInput.setMinLines(2);
-        addField(form, "乗り場メモ（任意）", notesInput, null);
-
         if (existing != null) {
-            routeInput.setText(existing.routeName());
-            stopInput.setText(existing.stopName());
-            destinationInput.setText(existing.destination());
-            walkInput.setText(String.valueOf(existing.walkMinutes()));
-            rideInput.setText(String.valueOf(existing.rideMinutes()));
-            finalWalkInput.setText(String.valueOf(existing.finalWalkMinutes()));
             officialTimetableUrlInput.setText(existing.officialTimetableUrl());
             weekdayInput.setText(times(existing.weekdayTimes()));
             weekendInput.setText(times(existing.weekendTimes()));
             holidayInput.setText(times(existing.holidayTimes()));
-            validUntilInput.setText(existing.validUntil() == null ? "" : existing.validUntil().toString());
-            notesInput.setText(existing.notes());
-        } else {
-            finalWalkInput.setText("0");
         }
 
         scroll.addView(form);
@@ -767,15 +600,15 @@ public final class MainActivity extends StyledActivity {
         footer.setPadding(dp(18), dp(12), dp(18), dp(14));
         footer.setBackground(roundRect(SURFACE, 0, LINE, 1));
         footer.setElevation(dp(8));
-        Button save = primaryButton(existing == null ? "登録して比較する" : "変更を保存");
+        Button save = primaryButton(existing == null ? "登録する" : "変更を保存");
         save.setOnClickListener(v -> {
             try {
-                if (!requireInput(routeInput, "路線名を入力してください")
-                        || !requireInput(stopInput, "駅・停留所を入力してください")
-                        || !requireInput(destinationInput, "行き先を入力してください")) return;
-                int walk = parseInt(walkInput, "徒歩時間");
-                int ride = parseInt(rideInput, "乗車時間");
-                int finalWalk = parseInt(finalWalkInput, "到着後の徒歩時間");
+                if (selectedMode[0] == null || selectedRoute[0].isBlank() || selectedStop[0].isBlank()
+                        || selectedDestination[0].isBlank()) {
+                    catalogStatus.setText(R.string.catalog_selection_required);
+                    catalogStatus.announceForAccessibility("路線を選択してください");
+                    return;
+                }
                 List<LocalTime> weekdays;
                 List<LocalTime> weekends;
                 List<LocalTime> holidays;
@@ -819,31 +652,17 @@ public final class MainActivity extends StyledActivity {
                     draftAttemptedAt[0] = 0;
                     draftLastError[0] = "";
                 }
-                LocalDate validUntil;
-                try {
-                    validUntil = validUntilInput.getText().toString().trim().isEmpty()
-                            ? null : LocalDate.parse(validUntilInput.getText().toString().trim());
-                } catch (RuntimeException error) {
-                    validUntilInput.setError("YYYY-MM-DD 形式で入力してください");
-                    validUntilInput.requestFocus();
-                    return;
-                }
                 RoutePlan plan = new RoutePlan(
                         existing == null ? null : existing.id(),
-                        directionInput.getSelectedItemPosition() == 0
-                                ? RoutePlan.Direction.OUTBOUND : RoutePlan.Direction.RETURN,
-                        modeInput.getSelectedItemPosition() == 0 ? RoutePlan.Mode.TRAIN : RoutePlan.Mode.BUS,
-                        routeInput.getText().toString(), stopInput.getText().toString(),
-                        destinationInput.getText().toString(), walk, ride, finalWalk,
-                        enabledInput.isChecked(), weekdays, weekends, holidays,
-                        notesInput.getText().toString(), validUntil, System.currentTimeMillis(),
+                        existing == null ? direction : existing.direction(), selectedMode[0],
+                        selectedRoute[0], selectedStop[0], selectedDestination[0], 0, 0, 0,
+                        true, weekdays, weekends, holidays,
+                        "", null, System.currentTimeMillis(),
                         officialTimetableUrl, draftFetchedAt[0], draftAttemptedAt[0], draftLastError[0]);
                 List<RoutePlan> updated = new ArrayList<>(plans);
                 if (existing == null) updated.add(plan);
                 else updated.set(indexOf(existing.id()), plan);
                 if (!saveAndApply(updated)) throw new IllegalStateException("端末に保存できませんでした");
-                direction = plan.direction();
-                appPreferences.setDirection(direction);
                 showDashboard();
                 if (plan.hasOfficialTimetableSource()
                         && (plan.officialTimetableFetchedAtEpochMillis() == 0 || !plan.hasCachedTimetable())) {
@@ -857,23 +676,45 @@ public final class MainActivity extends StyledActivity {
             }
         });
         footer.addView(save);
-        if (existing != null) {
-            Button duplicate = smallButton("この登録を複製して編集");
-            duplicate.setMinHeight(dp(48));
-            duplicate.setOnClickListener(v -> duplicateRoute(existing));
-            footer.addView(duplicate);
-        }
         root.addView(footer);
         setScreenContent(root);
     }
 
+    private TextView selectedTransitValue(String value) {
+        TextView label = text(value == null || value.isBlank() ? "未選択" : value, 17,
+                value == null || value.isBlank() ? MUTED : INK, Typeface.BOLD);
+        label.setMinHeight(dp(44));
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        return label;
+    }
+
+    private View selectionValue(String label, TextView value) {
+        LinearLayout row = vertical(SURFACE);
+        row.setPadding(dp(14), dp(9), dp(14), dp(9));
+        row.setBackground(roundRect(SURFACE, 14, OUTLINE, 1));
+        row.addView(text(label, 13, MUTED, Typeface.BOLD));
+        row.addView(value);
+        return row;
+    }
+
+    private void showSelectedTransit(
+            TextView routeValue, TextView stopValue, TextView destinationValue,
+            String route, String stop, String destination
+    ) {
+        routeValue.setText(route);
+        routeValue.setTextColor(INK);
+        stopValue.setText(stop);
+        stopValue.setTextColor(INK);
+        destinationValue.setText(destination);
+        destinationValue.setTextColor(INK);
+    }
+
+    private interface TransitSelectionCallback {
+        void onSelected(TransitCatalog.Service service, String stop, String destination);
+    }
+
     private void showTransitServicePicker(
-            TransitCatalog.Provider provider,
-            Spinner modeInput,
-            EditText routeInput,
-            EditText stopInput,
-            EditText destinationInput,
-            TextView catalogStatus
+            TransitCatalog.Provider provider, TransitSelectionCallback callback
     ) {
         List<TransitCatalog.Service> services = TransitCatalog.servicesFor(provider);
         CharSequence[] labels = new CharSequence[services.size()];
@@ -882,56 +723,34 @@ public final class MainActivity extends StyledActivity {
         }
         new AlertDialog.Builder(this)
                 .setTitle(provider.displayName() + "の路線・系統を選ぶ")
-                .setItems(labels, (dialog, selected) -> showTransitStopPicker(services.get(selected),
-                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                .setItems(labels, (dialog, selected) -> showTransitStopPicker(services.get(selected), callback))
                 .setNegativeButton("キャンセル", null)
                 .show();
     }
 
     private void showTransitStopPicker(
-            TransitCatalog.Service service,
-            Spinner modeInput,
-            EditText routeInput,
-            EditText stopInput,
-            EditText destinationInput,
-            TextView catalogStatus
+            TransitCatalog.Service service, TransitSelectionCallback callback
     ) {
         List<String> stops = service.stops();
         new AlertDialog.Builder(this)
                 .setTitle(service.displayName() + "\n乗る駅・停留所を選ぶ")
                 .setItems(stops.toArray(new CharSequence[0]), (dialog, selected) ->
-                        showTransitDestinationPicker(service, stops.get(selected), modeInput,
-                                routeInput, stopInput, destinationInput, catalogStatus))
-                .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(service.provider(),
-                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                        showTransitDestinationPicker(service, stops.get(selected), callback))
+                .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(service.provider(), callback))
                 .show();
     }
 
     private void showTransitDestinationPicker(
             TransitCatalog.Service service,
             String stop,
-            Spinner modeInput,
-            EditText routeInput,
-            EditText stopInput,
-            EditText destinationInput,
-            TextView catalogStatus
+            TransitSelectionCallback callback
     ) {
         List<String> destinations = service.destinations();
         new AlertDialog.Builder(this)
                 .setTitle("行き先・方面を選ぶ")
-                .setItems(destinations.toArray(new CharSequence[0]), (dialog, selected) -> {
-                    modeInput.setSelection(service.mode() == RoutePlan.Mode.TRAIN ? 0 : 1);
-                    routeInput.setText(service.displayName());
-                    stopInput.setText(stop);
-                    destinationInput.setText(destinations.get(selected));
-                    String result = "選択済み: " + service.provider().displayName() + " / "
-                            + service.displayName() + " / " + stop + " / "
-                            + destinations.get(selected);
-                    catalogStatus.setText(result);
-                    catalogStatus.announceForAccessibility(result);
-                })
-                .setNegativeButton("戻る", (dialog, ignored) -> showTransitStopPicker(service,
-                        modeInput, routeInput, stopInput, destinationInput, catalogStatus))
+                .setItems(destinations.toArray(new CharSequence[0]),
+                        (dialog, selected) -> callback.onSelected(service, stop, destinations.get(selected)))
+                .setNegativeButton("戻る", (dialog, ignored) -> showTransitStopPicker(service, callback))
                 .show();
     }
 
@@ -939,7 +758,7 @@ public final class MainActivity extends StyledActivity {
         hideKeyboard();
         screen = Screen.TIMETABLE;
         selectedPlan = plan;
-        LocalDate date = referenceTime().toLocalDate();
+        LocalDate date = LocalDate.now();
         boolean weekend = date.getDayOfWeek() == DayOfWeek.SATURDAY
                 || date.getDayOfWeek() == DayOfWeek.SUNDAY;
         int type = appPreferences.holidays().contains(date) && !plan.holidayTimes().isEmpty()
@@ -976,7 +795,7 @@ public final class MainActivity extends StyledActivity {
         root.addView(sourceStatus, sourceStatusParams);
 
         List<ScheduleEngine.Departure> next = ScheduleEngine.nextDepartures(
-                plan, referenceTime(), 3, appPreferences.holidays());
+                plan, LocalDateTime.now(), 3, appPreferences.holidays());
         if (!next.isEmpty()) root.addView(nextDeparturesCard(next));
 
         LinearLayout tabs = horizontal(Gravity.CENTER);
@@ -1272,7 +1091,7 @@ public final class MainActivity extends StyledActivity {
         content.addView(homeCard);
         content.addView(space(12));
 
-        LinearLayout routesCard = settingsCard("登録管理", "無効にした候補もここから編集できます");
+        LinearLayout routesCard = settingsCard("登録管理", "登録済みの路線をここから編集できます");
         if (plans.isEmpty()) {
             TextView empty = centerText("登録はありません", 14, MUTED, Typeface.NORMAL);
             empty.setPadding(0, dp(16), 0, dp(16));
@@ -1362,20 +1181,6 @@ public final class MainActivity extends StyledActivity {
         return button;
     }
 
-    private void choosePreviewDateTime() {
-        LocalDateTime initial = LocalDateTime.now();
-        new DatePickerDialog(this, (picker, year, month, day) ->
-                new TimePickerDialog(this, (timePicker, hour, minute) -> {
-                    previewTime = LocalDateTime.of(year, month + 1, day, hour, minute);
-                    showDashboard();
-                }, initial.getHour(), initial.getMinute(), true).show(),
-                initial.getYear(), initial.getMonthValue() - 1, initial.getDayOfMonth()).show();
-    }
-
-    private LocalDateTime referenceTime() {
-        return previewTime == null ? LocalDateTime.now() : previewTime;
-    }
-
     private void requestReminder(RoutePlan plan, ScheduleEngine.Departure departure) {
         pendingReminderPlan = plan;
         pendingReminderDeparture = departure;
@@ -1399,7 +1204,7 @@ public final class MainActivity extends StyledActivity {
     }
 
     private void scheduleReminder(RoutePlan plan, ScheduleEngine.Departure departure) {
-        LocalDateTime leaveAt = departure.at().minusMinutes(plan.walkMinutes());
+        LocalDateTime leaveAt = departure.at();
         long triggerAt = leaveAt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
         triggerAt = Math.max(triggerAt, System.currentTimeMillis() + 1000);
         Intent intent = new Intent(this, DepartureAlarmReceiver.class)
@@ -1409,7 +1214,7 @@ public final class MainActivity extends StyledActivity {
         PendingIntent pending = PendingIntent.getBroadcast(this, Math.abs(plan.id().hashCode()), intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         getSystemService(AlarmManager.class).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
-        Toast.makeText(this, time(leaveAt) + "ごろ通知します", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, time(leaveAt) + "に通知します", Toast.LENGTH_LONG).show();
         pendingReminderPlan = null;
         pendingReminderDeparture = null;
     }
@@ -1502,30 +1307,6 @@ public final class MainActivity extends StyledActivity {
             manager.requestPinAppWidget(new ComponentName(this, NextDepartureWidget.class), null, null);
         } else {
             Toast.makeText(this, "ホーム画面を長押しし、ウィジェットから追加してください", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void duplicateRoute(RoutePlan source) {
-        RoutePlan copy = source.duplicate(source.routeName() + " コピー");
-        List<RoutePlan> updated = new ArrayList<>(plans);
-        updated.add(copy);
-        if (saveAndApply(updated)) {
-            Toast.makeText(this, "複製しました", Toast.LENGTH_SHORT).show();
-            showForm(copy);
-        }
-    }
-
-    private void installSampleRoutes() {
-        List<LocalTime> times = new ArrayList<>();
-        for (int hour = 5; hour <= 23; hour++) {
-            times.add(LocalTime.of(hour, 5)); times.add(LocalTime.of(hour, 25)); times.add(LocalTime.of(hour, 45));
-        }
-        RoutePlan sample = new RoutePlan(null, direction, RoutePlan.Mode.TRAIN, "サンプル線 快速",
-                "サンプル駅", "目的地方面", 7, 24, 4, true, times, times, times,
-                "これはサンプルです。編集してお使いください", LocalDate.now().plusMonths(3), System.currentTimeMillis());
-        List<RoutePlan> updated = new ArrayList<>(plans); updated.add(sample);
-        if (saveAndApply(updated)) {
-            showDashboard();
         }
     }
 
@@ -1763,13 +1544,6 @@ public final class MainActivity extends StyledActivity {
         return result;
     }
 
-    private boolean requireInput(EditText input, String message) {
-        if (!input.getText().toString().trim().isEmpty()) return true;
-        input.setError(message);
-        input.requestFocus();
-        return false;
-    }
-
     private void addFrequencyBuilder(LinearLayout parent, EditText target, String label) {
         Button builder = smallButton("＋ " + label + "の等間隔ダイヤを作る");
         builder.setMinHeight(dp(48));
@@ -1838,21 +1612,6 @@ public final class MainActivity extends StyledActivity {
         throw new IllegalStateException("編集対象が見つかりません");
     }
 
-    private int parseInt(EditText input, String label) {
-        String raw = input.getText().toString().trim();
-        if (raw.isEmpty()) {
-            input.setError(label + "を入力してください");
-            input.requestFocus();
-            throw new IllegalArgumentException(label + "を入力してください");
-        }
-        try { return Integer.parseInt(raw); }
-        catch (NumberFormatException error) {
-            input.setError(label + "は数字で入力してください");
-            input.requestFocus();
-            throw new IllegalArgumentException(label + "は数字で入力してください");
-        }
-    }
-
     private void setScreenContent(View content) {
         FrameLayout outer = new FrameLayout(this);
         outer.setBackgroundColor(CANVAS);
@@ -1862,7 +1621,7 @@ public final class MainActivity extends StyledActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL);
         outer.addView(content, params);
         if (android.os.Build.VERSION.SDK_INT >= 28) {
-            String paneTitle = screen == Screen.DASHBOARD ? "次発比較"
+            String paneTitle = screen == Screen.DASHBOARD ? "次の便"
                     : screen == Screen.FORM ? "路線の登録と編集"
                     : screen == Screen.TIMETABLE ? "時刻表" : "設定";
             content.setAccessibilityPaneTitle(paneTitle);

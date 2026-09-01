@@ -31,7 +31,7 @@ public final class ScheduleEngine {
             RoutePlan plan, LocalDateTime now, int limit, Set<LocalDate> holidays
     ) {
         List<Departure> result = new ArrayList<>();
-        LocalDateTime readyAt = now.plusMinutes(plan.walkMinutes());
+        LocalDateTime readyAt = now;
 
         for (int dayOffset = 0; dayOffset < 8 && result.size() < limit; dayOffset++) {
             LocalDate date = now.toLocalDate().plusDays(dayOffset);
@@ -65,12 +65,11 @@ public final class ScheduleEngine {
             if (!next.isEmpty()) {
                 Departure departure = next.get(0);
                 result.add(new RouteOption(plan, departure,
-                        departure.at().plusMinutes(plan.rideMinutes() + plan.finalWalkMinutes())));
+                        departure.at()));
             }
         }
         result.sort(Comparator
-                .comparing(RouteOption::estimatedArrival)
-                .thenComparing(option -> option.departure().at()));
+                .comparing(option -> option.departure().at()));
         return result;
     }
 

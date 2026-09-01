@@ -31,15 +31,15 @@ public class ScheduleEngineTest {
         ScheduleEngine.parseTimes("07:20 25:10");
     }
 
-    @Test public void walkingTimeSkipsUnreachableDeparture() {
+    @Test public void nextDepartureUsesCurrentTimeWithoutWalkingOffset() {
         RoutePlan plan = plan("A線", 8, 20, RoutePlan.Direction.OUTBOUND,
                 List.of(LocalTime.of(9, 5), LocalTime.of(9, 12), LocalTime.of(9, 30)), List.of());
         LocalDateTime now = LocalDateTime.of(2026, 8, 31, 9, 0);
 
         List<ScheduleEngine.Departure> result = ScheduleEngine.nextDepartures(plan, now, 2);
 
-        assertEquals(LocalTime.of(9, 12), result.get(0).at().toLocalTime());
-        assertEquals(12, result.get(0).waitMinutes());
+        assertEquals(LocalTime.of(9, 5), result.get(0).at().toLocalTime());
+        assertEquals(5, result.get(0).waitMinutes());
     }
 
     @Test public void waitMinutesRoundUpWhenCurrentTimeHasSeconds() {
@@ -52,7 +52,7 @@ public class ScheduleEngineTest {
         assertEquals(12, result.waitMinutes());
     }
 
-    @Test public void comparesByEstimatedArrivalNotOnlyDeparture() {
+    @Test public void comparesByNextDeparture() {
         LocalDateTime now = LocalDateTime.of(2026, 8, 31, 9, 0);
         RoutePlan local = plan("各停", 0, 40, RoutePlan.Direction.OUTBOUND,
                 List.of(LocalTime.of(9, 5)), List.of());
@@ -62,8 +62,8 @@ public class ScheduleEngineTest {
         List<ScheduleEngine.RouteOption> result = ScheduleEngine.compare(
                 List.of(local, express), RoutePlan.Direction.OUTBOUND, now);
 
-        assertEquals("快速", result.get(0).plan().routeName());
-        assertEquals(LocalTime.of(9, 27), result.get(0).estimatedArrival().toLocalTime());
+        assertEquals("各停", result.get(0).plan().routeName());
+        assertEquals(LocalTime.of(9, 5), result.get(0).estimatedArrival().toLocalTime());
     }
 
     @Test public void findsNextDayAfterLastService() {
@@ -100,7 +100,7 @@ public class ScheduleEngineTest {
                 LocalDateTime.of(2026, 8, 31, 9, 0)).isEmpty());
     }
 
-    @Test public void finalWalkIsIncludedInArrivalComparison() {
+    @Test public void legacyDurationFieldsDoNotChangeNextDepartureOrder() {
         RoutePlan nearExit = new RoutePlan(null, RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.TRAIN,
                 "出口近く", "駅", "方面", 0, 20, 0, true,
                 List.of(LocalTime.of(9, 10)), List.of(), List.of(), "", null, 1);
@@ -112,6 +112,6 @@ public class ScheduleEngineTest {
                 List.of(farExit, nearExit), RoutePlan.Direction.OUTBOUND,
                 LocalDateTime.of(2026, 8, 31, 9, 0));
 
-        assertEquals("出口近く", result.get(0).plan().routeName());
+        assertEquals("出口遠く", result.get(0).plan().routeName());
     }
 }
