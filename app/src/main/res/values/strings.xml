@@ -1,8 +1,8 @@
 <resources>
     <string name="app_name">すぐのる</string>
-    <string name="catalog_jr_selected">JR東日本を選択しました。</string>
-    <string name="catalog_selection_required">JR東日本または都営バスから路線を選択してください。</string>
-    <string name="widget_description">行き・帰りの最速候補と次発を表示します</string>
+    <string name="catalog_toei_selected">都営バスを選択しました。</string>
+    <string name="catalog_toei_selection_required">都営バスの路線・系統を選択してください。</string>
+    <string name="widget_description">行き・帰りの次の都営バスを表示します</string>
     <string name="widget_outbound">出かける</string>
     <string name="widget_no_time">--:--</string>
     <string name="widget_no_route">路線を登録してください</string>

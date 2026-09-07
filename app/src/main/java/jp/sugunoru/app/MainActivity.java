@@ -122,6 +122,10 @@ public final class MainActivity extends StyledActivity {
             }
             String restoredScreen = state.getString("screen", Screen.DASHBOARD.name());
             try { screen = Screen.valueOf(restoredScreen); } catch (IllegalArgumentException ignored) {}
+            if (selectedPlan != null && !TransitCatalog.isSupported(selectedPlan)) {
+                selectedPlan = null;
+                screen = Screen.DASHBOARD;
+            }
             timetableScheduleType = state.getInt("scheduleType", 0);
             if (screen == Screen.FORM) showForm(selectedPlan);
             else if (screen == Screen.TIMETABLE && selectedPlan != null) showTimetableFor(selectedPlan, timetableScheduleType);
@@ -237,7 +241,7 @@ public final class MainActivity extends StyledActivity {
         LocalDateTime reference = LocalDateTime.now();
         lastRenderedMinute = reference.getMinute();
         List<ScheduleEngine.RouteOption> options = ScheduleEngine.compare(
-                plans, direction, reference, appPreferences.holidays());
+                toeiBusPlans(), direction, reference, appPreferences.holidays());
         if (options.isEmpty()) {
             list.addView(emptyState());
         } else {
@@ -302,7 +306,7 @@ public final class MainActivity extends StyledActivity {
         boolean hasThisDirection = false;
         boolean hasActiveRoute = false;
         List<String> missingOfficialTimetableIds = new ArrayList<>();
-        for (RoutePlan plan : plans) {
+        for (RoutePlan plan : toeiBusPlans()) {
             if (plan.direction() != direction) continue;
             hasThisDirection = true;
             if (plan.enabled()) hasActiveRoute = true;
@@ -364,11 +368,7 @@ public final class MainActivity extends StyledActivity {
                 + ScheduleEngine.formatMinutes(option.departure().waitMinutes()) + "。タップして時刻表を開く");
 
         LinearLayout meta = horizontal(Gravity.CENTER_VERTICAL);
-        meta.addView(pill(plan.mode() == RoutePlan.Mode.TRAIN ? "電車" : "バス",
-                plan.mode() == RoutePlan.Mode.TRAIN ? BRAND_DARK : AMBER,
-                plan.mode() == RoutePlan.Mode.TRAIN ? BRAND_SOFT : AMBER_SOFT));
         TextView route = text(plan.routeName(), 14, MUTED, Typeface.BOLD);
-        route.setPadding(dp(8), 0, 0, 0);
         meta.addView(route, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         card.addView(meta);
 
@@ -430,6 +430,10 @@ public final class MainActivity extends StyledActivity {
     }
 
     private void showForm(RoutePlan existing) {
+        if (existing != null && !TransitCatalog.isSupported(existing)) {
+            showDashboard();
+            return;
+        }
         hideKeyboard();
         screen = Screen.FORM;
         selectedPlan = existing;
@@ -445,10 +449,10 @@ public final class MainActivity extends StyledActivity {
         LinearLayout form = vertical(Color.TRANSPARENT);
         form.setPadding(dp(18), dp(10), dp(18), dp(28));
 
-        form.addView(formSectionTitle("1", "路線を選ぶ", "JR東日本または都営バスから選択"));
+        form.addView(formSectionTitle("1", "都営バスの路線を選ぶ", "路線・系統、停留所、行き先・方面を順に選択"));
         form.addView(space(12));
 
-        final RoutePlan.Mode[] selectedMode = {existing == null ? null : existing.mode()};
+        final RoutePlan.Mode[] selectedMode = {RoutePlan.Mode.BUS};
         final String[] selectedRoute = {existing == null ? "" : existing.routeName()};
         final String[] selectedStop = {existing == null ? "" : existing.stopName()};
         final String[] selectedDestination = {existing == null ? "" : existing.destination()};
@@ -456,69 +460,28 @@ public final class MainActivity extends StyledActivity {
         TextView stopValue = selectedTransitValue(selectedStop[0]);
         TextView destinationValue = selectedTransitValue(selectedDestination[0]);
 
-        LinearLayout catalogCard = vertical(SURFACE_VARIANT);
-        catalogCard.setPadding(dp(14), dp(14), dp(14), dp(14));
-        catalogCard.setBackground(roundRect(SURFACE_VARIANT, 16, BRAND_DARK, 1));
-        TextView catalogTitle = text("路線・系統を選ぶ", 16, INK, Typeface.BOLD);
-        markAsHeading(catalogTitle);
-        catalogCard.addView(catalogTitle);
-        TextView catalogHelp = text("路線・系統、駅・停留所、方面の順に選択します。",
-                13, MUTED, Typeface.NORMAL);
-        catalogHelp.setPadding(0, dp(4), 0, dp(10));
-        catalogCard.addView(catalogHelp);
-        LinearLayout catalogActions = horizontal(Gravity.CENTER_VERTICAL);
-        Button chooseJr = secondaryButton("JR東日本から選ぶ");
-        Button chooseToei = secondaryButton("都営バスから選ぶ");
-        if (isConstrainedContent()) {
-            catalogActions.setOrientation(LinearLayout.VERTICAL);
-            catalogActions.addView(chooseJr);
-            catalogActions.addView(space(8));
-            catalogActions.addView(chooseToei);
-        } else {
-            LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            first.setMarginEnd(dp(4));
-            catalogActions.addView(chooseJr, first);
-            LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            second.setMarginStart(dp(4));
-            catalogActions.addView(chooseToei, second);
-        }
-        catalogCard.addView(catalogActions);
+        Button chooseRoute = secondaryButton("路線・系統を選ぶ");
+        chooseRoute.setContentDescription("都営バスの路線・系統、停留所、行き先・方面を選ぶ");
         TextView catalogStatus = text("選択した内容は下に表示されます。",
                 13, BRAND_DARK, Typeface.NORMAL);
         catalogStatus.setPadding(0, dp(10), 0, 0);
-        catalogCard.addView(catalogStatus);
-        chooseJr.setContentDescription("JR東日本の路線、駅、方面を選ぶ");
-        chooseToei.setContentDescription("都営バスの系統、停留所、方面を選ぶ");
-        chooseJr.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.JR_EAST,
+        chooseRoute.setOnClickListener(v -> showTransitServicePicker(
                 (service, stop, destination) -> {
-                    selectedMode[0] = service.mode();
                     selectedRoute[0] = service.displayName();
                     selectedStop[0] = stop;
                     selectedDestination[0] = destination;
-                    catalogStatus.setText(R.string.catalog_jr_selected);
-                    catalogStatus.announceForAccessibility("JR東日本の路線を選択しました");
-                    showSelectedTransit(routeValue, stopValue, destinationValue,
-                            selectedRoute[0], selectedStop[0], selectedDestination[0]);
-                }));
-        chooseToei.setOnClickListener(v -> showTransitServicePicker(TransitCatalog.Provider.TOEI_BUS,
-                (service, stop, destination) -> {
-                    selectedMode[0] = service.mode();
-                    selectedRoute[0] = service.displayName();
-                    selectedStop[0] = stop;
-                    selectedDestination[0] = destination;
-                    catalogStatus.setText("都営バスを選択しました。");
+                    catalogStatus.setText(R.string.catalog_toei_selected);
                     catalogStatus.announceForAccessibility("都営バスの系統を選択しました");
                     showSelectedTransit(routeValue, stopValue, destinationValue,
                             selectedRoute[0], selectedStop[0], selectedDestination[0]);
                 }));
-        form.addView(catalogCard);
+        form.addView(chooseRoute);
+        form.addView(catalogStatus);
         form.addView(space(16));
 
         form.addView(selectionValue("路線・系統", routeValue));
         form.addView(space(8));
-        form.addView(selectionValue("乗る駅・停留所", stopValue));
+        form.addView(selectionValue("乗る停留所", stopValue));
         form.addView(space(8));
         form.addView(selectionValue("行き先・方面", destinationValue));
         form.addView(space(22));
@@ -605,7 +568,7 @@ public final class MainActivity extends StyledActivity {
             try {
                 if (selectedMode[0] == null || selectedRoute[0].isBlank() || selectedStop[0].isBlank()
                         || selectedDestination[0].isBlank()) {
-                    catalogStatus.setText(R.string.catalog_selection_required);
+                    catalogStatus.setText(R.string.catalog_toei_selection_required);
                     catalogStatus.announceForAccessibility("路線を選択してください");
                     return;
                 }
@@ -713,16 +676,14 @@ public final class MainActivity extends StyledActivity {
         void onSelected(TransitCatalog.Service service, String stop, String destination);
     }
 
-    private void showTransitServicePicker(
-            TransitCatalog.Provider provider, TransitSelectionCallback callback
-    ) {
-        List<TransitCatalog.Service> services = TransitCatalog.servicesFor(provider);
+    private void showTransitServicePicker(TransitSelectionCallback callback) {
+        List<TransitCatalog.Service> services = TransitCatalog.services();
         CharSequence[] labels = new CharSequence[services.size()];
         for (int index = 0; index < services.size(); index++) {
             labels[index] = services.get(index).displayName();
         }
         new AlertDialog.Builder(this)
-                .setTitle(provider.displayName() + "の路線・系統を選ぶ")
+                .setTitle("都営バスの路線・系統を選ぶ")
                 .setItems(labels, (dialog, selected) -> showTransitStopPicker(services.get(selected), callback))
                 .setNegativeButton("キャンセル", null)
                 .show();
@@ -736,7 +697,7 @@ public final class MainActivity extends StyledActivity {
                 .setTitle(service.displayName() + "\n乗る駅・停留所を選ぶ")
                 .setItems(stops.toArray(new CharSequence[0]), (dialog, selected) ->
                         showTransitDestinationPicker(service, stops.get(selected), callback))
-                .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(service.provider(), callback))
+                .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(callback))
                 .show();
     }
 
@@ -770,17 +731,14 @@ public final class MainActivity extends StyledActivity {
         screen = Screen.TIMETABLE;
         timetableScheduleType = scheduleType;
         LinearLayout root = vertical(CANVAS);
-        root.addView(pageHeader("駅の時刻表", this::showDashboard, () -> showForm(plan)));
+        root.addView(pageHeader("停留所の時刻表", this::showDashboard, () -> showForm(plan)));
 
         LinearLayout summary = vertical(SURFACE);
         summary.setPadding(dp(18), dp(16), dp(18), dp(16));
         summary.setBackground(roundRect(SURFACE, 20, OUTLINE, 1));
         summary.setElevation(dp(1));
-        summary.addView(pill(plan.mode() == RoutePlan.Mode.TRAIN ? "電車" : "バス",
-                plan.mode() == RoutePlan.Mode.TRAIN ? BRAND_DARK : AMBER,
-                plan.mode() == RoutePlan.Mode.TRAIN ? BRAND_SOFT : AMBER_SOFT));
         TextView stop = text(plan.stopName(), 26, INK, Typeface.BOLD);
-        stop.setPadding(0, dp(10), 0, dp(3));
+        stop.setPadding(0, 0, 0, dp(3));
         summary.addView(stop);
         summary.addView(text(plan.routeName() + "  ·  " + plan.destination() + " 行き", 14, MUTED, Typeface.NORMAL));
         LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(
@@ -1017,8 +975,9 @@ public final class MainActivity extends StyledActivity {
         content.addView(backupCard);
         content.addView(space(12));
 
+        List<RoutePlan> toeiPlans = toeiBusPlans();
         List<String> officialSourceIds = new ArrayList<>();
-        for (RoutePlan plan : plans) {
+        for (RoutePlan plan : toeiPlans) {
             if (plan.hasOfficialTimetableSource()) officialSourceIds.add(plan.id());
         }
         LinearLayout officialCard = settingsCard("公式時刻表の更新",
@@ -1092,12 +1051,12 @@ public final class MainActivity extends StyledActivity {
         content.addView(space(12));
 
         LinearLayout routesCard = settingsCard("登録管理", "登録済みの路線をここから編集できます");
-        if (plans.isEmpty()) {
+        if (toeiPlans.isEmpty()) {
             TextView empty = centerText("登録はありません", 14, MUTED, Typeface.NORMAL);
             empty.setPadding(0, dp(16), 0, dp(16));
             routesCard.addView(empty);
         } else {
-            for (RoutePlan plan : plans) {
+            for (RoutePlan plan : toeiPlans) {
                 LinearLayout item = horizontal(Gravity.CENTER_VERTICAL);
                 if (isConstrainedContent()) item.setOrientation(LinearLayout.VERTICAL);
                 item.setPadding(dp(14), dp(11), dp(8), dp(11));
@@ -1127,7 +1086,8 @@ public final class MainActivity extends StyledActivity {
         content.addView(space(12));
 
         LinearLayout privacyCard = settingsCard("プライバシー", "登録内容はこの端末の中だけに保存されます");
-        TextView privacy = text("通信・アカウント・位置情報・分析SDKは使用しません。", 14, BRAND_DARK, Typeface.NORMAL);
+        TextView privacy = text("位置情報・アカウント・分析SDKは使用しません。時刻表更新時だけ通信します。",
+                14, BRAND_DARK, Typeface.NORMAL);
         privacy.setPadding(dp(14), dp(12), dp(14), dp(12));
         privacy.setBackground(roundRect(BRAND_SOFT, 14, 0, 0));
         privacyCard.addView(privacy);
@@ -1322,6 +1282,14 @@ public final class MainActivity extends StyledActivity {
         NextDepartureWidget.updateAll(this);
     }
 
+    private List<RoutePlan> toeiBusPlans() {
+        List<RoutePlan> result = new ArrayList<>();
+        for (RoutePlan plan : plans) {
+            if (TransitCatalog.isSupported(plan)) result.add(plan);
+        }
+        return result;
+    }
+
     private void fetchOfficialTimetableIntoForm(
             String sourceUrl, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
             Button action, Runnable onSuccess
@@ -1364,7 +1332,7 @@ public final class MainActivity extends StyledActivity {
     private void refreshStaleOfficialTimetables() {
         long now = System.currentTimeMillis();
         List<String> staleIds = new ArrayList<>();
-        for (RoutePlan plan : plans) {
+        for (RoutePlan plan : toeiBusPlans()) {
             if (plan.hasOfficialTimetableSource() && officialTimetableRefreshIsDue(plan, now)) {
                 staleIds.add(plan.id());
             }
@@ -1397,7 +1365,7 @@ public final class MainActivity extends StyledActivity {
         List<OfficialRefreshRequest> requests = new ArrayList<>();
         for (String id : requestedIds) {
             RoutePlan plan = findPlan(id);
-            if (plan == null || !plan.hasOfficialTimetableSource()
+            if (plan == null || !TransitCatalog.isSupported(plan) || !plan.hasOfficialTimetableSource()
                     || refreshingOfficialTimetableIds.contains(plan.id())) continue;
             refreshingOfficialTimetableIds.add(plan.id());
             requests.add(new OfficialRefreshRequest(plan.id(), plan.officialTimetableUrl(),

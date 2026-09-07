@@ -12,11 +12,13 @@ import jp.sugunoru.app.MainActivity;
 import jp.sugunoru.app.R;
 import jp.sugunoru.app.data.AppPreferences;
 import jp.sugunoru.app.data.RouteRepository;
+import jp.sugunoru.app.data.TransitCatalog;
 import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.ui.ScheduleDisplayFormatter;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 public final class NextDepartureWidget extends AppWidgetProvider {
@@ -41,14 +43,16 @@ public final class NextDepartureWidget extends AppWidgetProvider {
     private static void update(Context context, AppWidgetManager manager, int id) {
         AppPreferences preferences = new AppPreferences(context);
         RoutePlan.Direction direction = preferences.direction();
+        List<RoutePlan> plans = new ArrayList<>(new RouteRepository(context).load());
+        plans.removeIf(plan -> !TransitCatalog.isSupported(plan));
         List<ScheduleEngine.RouteOption> options = ScheduleEngine.compare(
-                new RouteRepository(context).load(), direction, LocalDateTime.now(), preferences.holidays());
+                plans, direction, LocalDateTime.now(), preferences.holidays());
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_next_departure);
         views.setTextViewText(R.id.widget_direction,
                 direction == RoutePlan.Direction.OUTBOUND ? "→  出かける・次の便" : "←  帰る・次の便");
         if (options.isEmpty()) {
             views.setTextViewText(R.id.widget_time, "--:--");
-            views.setTextViewText(R.id.widget_route, "路線を登録してください");
+            views.setTextViewText(R.id.widget_route, "都営バスの路線を登録してください");
             views.setTextViewText(R.id.widget_wait, "タップして開く");
         } else {
             ScheduleEngine.RouteOption option = options.get(0);
