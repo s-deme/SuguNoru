@@ -101,8 +101,7 @@ public final class RoutePlan {
         this.officialTimetableAttemptedAtEpochMillis = Math.max(0, officialTimetableAttemptedAtEpochMillis);
         this.officialTimetableLastError = officialTimetableLastError == null
                 ? "" : officialTimetableLastError.trim();
-        if (this.weekdayTimes.isEmpty() && this.weekendTimes.isEmpty() && this.holidayTimes.isEmpty()
-                && this.officialTimetableUrl.isEmpty()) {
+        if (!hasCachedTimetable() && this.officialTimetableUrl.isEmpty()) {
             throw new IllegalArgumentException("時刻を1件以上入力してください");
         }
     }
@@ -166,10 +165,11 @@ public final class RoutePlan {
     }
 
     private static String requireText(String value, String label) {
-        if (value == null || value.trim().isEmpty()) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.isEmpty()) {
             throw new IllegalArgumentException(label + "を入力してください");
         }
-        return value.trim();
+        return normalized;
     }
 
     private static int requireRange(int value, int min, int max, String label) {

@@ -93,7 +93,7 @@ public final class ScheduleEngine {
                 .replace('、', ' ')
                 .replace(',', ' ');
         String[] tokens = normalized.split("[\\s]+", -1);
-        List<LocalTime> result = new ArrayList<>();
+        TreeSet<LocalTime> result = new TreeSet<>();
         for (String token : tokens) {
             if (token.isBlank()) continue;
             String value = token.matches("\\d{3,4}")
@@ -109,7 +109,7 @@ public final class ScheduleEngine {
                 throw new IllegalArgumentException("「" + token + "」は時刻として読めません（例 07:35）");
             }
         }
-        return new ArrayList<>(new TreeSet<>(result));
+        return new ArrayList<>(result);
     }
 
     public static String formatMinutes(long minutes) {

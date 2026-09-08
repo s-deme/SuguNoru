@@ -281,25 +281,19 @@ public final class MainActivity extends StyledActivity {
         shell.setBackground(roundRect(SEGMENT, 18, LINE, 1));
         Button outbound = segmentButton("→  出かける", direction == RoutePlan.Direction.OUTBOUND);
         Button returning = segmentButton("←  帰る", direction == RoutePlan.Direction.RETURN);
-        outbound.setOnClickListener(v -> {
-            if (direction != RoutePlan.Direction.OUTBOUND) {
-                direction = RoutePlan.Direction.OUTBOUND;
-                appPreferences.setDirection(direction);
-                NextDepartureWidget.updateAll(this);
-                showDashboard();
-            }
-        });
-        returning.setOnClickListener(v -> {
-            if (direction != RoutePlan.Direction.RETURN) {
-                direction = RoutePlan.Direction.RETURN;
-                appPreferences.setDirection(direction);
-                NextDepartureWidget.updateAll(this);
-                showDashboard();
-            }
-        });
+        outbound.setOnClickListener(v -> selectDirection(RoutePlan.Direction.OUTBOUND));
+        returning.setOnClickListener(v -> selectDirection(RoutePlan.Direction.RETURN));
         shell.addView(outbound, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         shell.addView(returning, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         return shell;
+    }
+
+    private void selectDirection(RoutePlan.Direction selectedDirection) {
+        if (direction == selectedDirection) return;
+        direction = selectedDirection;
+        appPreferences.setDirection(direction);
+        NextDepartureWidget.updateAll(this);
+        showDashboard();
     }
 
     private View emptyState() {
@@ -406,13 +400,14 @@ public final class MainActivity extends StyledActivity {
         }
         if (next.size() <= 1) following.append("登録便なし");
         LinearLayout nextRow = horizontal(Gravity.CENTER_VERTICAL);
-        if (isConstrainedContent()) nextRow.setOrientation(LinearLayout.VERTICAL);
+        boolean constrained = isConstrainedContent();
+        if (constrained) nextRow.setOrientation(LinearLayout.VERTICAL);
         nextRow.addView(text(following.toString(), 14, MUTED, Typeface.NORMAL),
-                isConstrainedContent()
+                constrained
                         ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                         : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView timetableLink = text("時刻表を見る  ›", 14, BRAND_DARK, Typeface.BOLD);
-        if (isConstrainedContent()) timetableLink.setPadding(0, dp(6), 0, 0);
+        if (constrained) timetableLink.setPadding(0, dp(6), 0, 0);
         nextRow.addView(timetableLink);
         footer.addView(nextRow);
         LinearLayout actions = horizontal(Gravity.END | Gravity.CENTER_VERTICAL);
@@ -452,7 +447,6 @@ public final class MainActivity extends StyledActivity {
         form.addView(formSectionTitle("1", "都営バスの路線を選ぶ", "路線・系統、停留所、行き先・方面を順に選択"));
         form.addView(space(12));
 
-        final RoutePlan.Mode[] selectedMode = {RoutePlan.Mode.BUS};
         final String[] selectedRoute = {existing == null ? "" : existing.routeName()};
         final String[] selectedStop = {existing == null ? "" : existing.stopName()};
         final String[] selectedDestination = {existing == null ? "" : existing.destination()};
@@ -566,7 +560,7 @@ public final class MainActivity extends StyledActivity {
         Button save = primaryButton(existing == null ? "登録する" : "変更を保存");
         save.setOnClickListener(v -> {
             try {
-                if (selectedMode[0] == null || selectedRoute[0].isBlank() || selectedStop[0].isBlank()
+                if (selectedRoute[0].isBlank() || selectedStop[0].isBlank()
                         || selectedDestination[0].isBlank()) {
                     catalogStatus.setText(R.string.catalog_toei_selection_required);
                     catalogStatus.announceForAccessibility("路線を選択してください");
@@ -617,7 +611,7 @@ public final class MainActivity extends StyledActivity {
                 }
                 RoutePlan plan = new RoutePlan(
                         existing == null ? null : existing.id(),
-                        existing == null ? direction : existing.direction(), selectedMode[0],
+                        existing == null ? direction : existing.direction(), RoutePlan.Mode.BUS,
                         selectedRoute[0], selectedStop[0], selectedDestination[0], 0, 0, 0,
                         true, weekdays, weekends, holidays,
                         "", null, System.currentTimeMillis(),
@@ -644,8 +638,9 @@ public final class MainActivity extends StyledActivity {
     }
 
     private TextView selectedTransitValue(String value) {
-        TextView label = text(value == null || value.isBlank() ? "未選択" : value, 17,
-                value == null || value.isBlank() ? MUTED : INK, Typeface.BOLD);
+        boolean unselected = value == null || value.isBlank();
+        TextView label = text(unselected ? "未選択" : value, 17,
+                unselected ? MUTED : INK, Typeface.BOLD);
         label.setMinHeight(dp(44));
         label.setGravity(Gravity.CENTER_VERTICAL);
         return label;
@@ -1058,7 +1053,8 @@ public final class MainActivity extends StyledActivity {
         } else {
             for (RoutePlan plan : toeiPlans) {
                 LinearLayout item = horizontal(Gravity.CENTER_VERTICAL);
-                if (isConstrainedContent()) item.setOrientation(LinearLayout.VERTICAL);
+                boolean constrained = isConstrainedContent();
+                if (constrained) item.setOrientation(LinearLayout.VERTICAL);
                 item.setPadding(dp(14), dp(11), dp(8), dp(11));
                 item.setBackground(roundRect(SURFACE_VARIANT, 15, OUTLINE, 1));
                 LinearLayout labels = vertical(Color.TRANSPARENT);
@@ -1071,12 +1067,12 @@ public final class MainActivity extends StyledActivity {
                 status.addView(routeName, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
                 labels.addView(status);
                 labels.addView(text(plan.stopName() + " → " + plan.destination(), 14, MUTED, Typeface.NORMAL));
-                item.addView(labels, isConstrainedContent()
+                item.addView(labels, constrained
                         ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                         : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
                 Button edit = smallButton("編集");
                 edit.setOnClickListener(v -> showForm(plan));
-                if (isConstrainedContent()) edit.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                if (constrained) edit.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
                 item.addView(edit);
                 routesCard.addView(item);
                 routesCard.addView(space(8));
@@ -1167,11 +1163,12 @@ public final class MainActivity extends StyledActivity {
         LocalDateTime leaveAt = departure.at();
         long triggerAt = leaveAt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
         triggerAt = Math.max(triggerAt, System.currentTimeMillis() + 1000);
+        int notificationId = Math.abs(plan.id().hashCode());
         Intent intent = new Intent(this, DepartureAlarmReceiver.class)
                 .putExtra("title", plan.routeName() + "へ出発する時間です")
                 .putExtra("detail", plan.stopName() + " " + time(departure.at()) + "発")
-                .putExtra("notificationId", Math.abs(plan.id().hashCode()));
-        PendingIntent pending = PendingIntent.getBroadcast(this, Math.abs(plan.id().hashCode()), intent,
+                .putExtra("notificationId", notificationId);
+        PendingIntent pending = PendingIntent.getBroadcast(this, notificationId, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         getSystemService(AlarmManager.class).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
         Toast.makeText(this, time(leaveAt) + "に通知します", Toast.LENGTH_LONG).show();
@@ -1472,8 +1469,8 @@ public final class MainActivity extends StyledActivity {
     }
 
     private RoutePlan findPlan(String id) {
-        for (RoutePlan plan : plans) if (plan.id().equals(id)) return plan;
-        return null;
+        int index = indexOfOrMinusOne(plans, id);
+        return index < 0 ? null : plans.get(index);
     }
 
     private int indexOfOrMinusOne(List<RoutePlan> values, String id) {
@@ -1576,7 +1573,8 @@ public final class MainActivity extends StyledActivity {
     }
 
     private int indexOf(String id) {
-        for (int i = 0; i < plans.size(); i++) if (plans.get(i).id().equals(id)) return i;
+        int index = indexOfOrMinusOne(plans, id);
+        if (index >= 0) return index;
         throw new IllegalStateException("編集対象が見つかりません");
     }
 

@@ -11,6 +11,21 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class RoutePlanTest {
+    @Test public void trimsRequiredRouteLabels() {
+        RoutePlan plan = RoutePlan.create(RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
+                "\t 路線 \n", " 停留所 ", " 方面 ", 0, 0,
+                List.of(LocalTime.of(8, 0)), List.of());
+        assertEquals("路線", plan.routeName());
+        assertEquals("停留所", plan.stopName());
+        assertEquals("方面", plan.destination());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsEmptySchedulesWithoutAnOfficialSource() {
+        RoutePlan.create(RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
+                "路線", "停留所", "方面", 0, 0, List.of(), List.of());
+    }
+
     @Test public void duplicateKeepsRouteDetailsButUsesANewIdentity() {
         RoutePlan source = new RoutePlan("source-id", RoutePlan.Direction.RETURN, RoutePlan.Mode.BUS,
                 "循環バス", "駅前", "市役所", 4, 18, 6, false,

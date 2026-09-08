@@ -63,10 +63,11 @@ public final class OfficialTimetableFetcher {
                 try (InputStream input = connection.getInputStream()) {
                     body = readLimited(input);
                 }
-                Charset charset = responseCharset(connection.getContentType(), body);
+                String contentType = connection.getContentType();
+                Charset charset = responseCharset(contentType, body);
                 String document = new String(body, charset);
                 OfficialTimetableParser.Timetable timetable = OfficialTimetableParser.parse(
-                        document, connection.getContentType());
+                        document, contentType);
                 return new FetchResult(timetable, current.toString());
             } catch (FetchException error) {
                 throw error;

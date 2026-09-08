@@ -59,4 +59,32 @@ public class OfficialTimetableParserTest {
         assertEquals(List.of(LocalTime.of(8, 10)), result.weekendTimes());
         assertEquals(List.of(LocalTime.of(9, 20)), result.holidayTimes());
     }
+
+    @Test public void explicitLabelsTakePriorityBeforeAssigningUnnamedSectionsInBothFormats() {
+        String page = """
+                <table><tr><td>07:10</td></tr></table>
+                <h2>平日</h2><table><tr><td>09:00</td></tr></table>
+                <table><tr><td>08:20</td></tr></table>
+                <table><tr><td>06:30</td></tr></table>
+                """;
+        String json = """
+                {"first":["07:10"],"weekdayTimes":["09:00"],"second":["08:20"],"third":["06:30"]}
+                """;
+
+        OfficialTimetableParser.Timetable result = OfficialTimetableParser.parseHtml(page);
+
+        assertEquals(result, OfficialTimetableParser.parseJson(json));
+        assertEquals(List.of(LocalTime.of(6, 30), LocalTime.of(9, 0)), result.weekdayTimes());
+        assertEquals(List.of(LocalTime.of(7, 10)), result.weekendTimes());
+        assertEquals(List.of(LocalTime.of(8, 20)), result.holidayTimes());
+    }
+
+    @Test public void jsonFallbackStillSortsAndDeduplicatesAnUnnamedRootArray() {
+        OfficialTimetableParser.Timetable result = OfficialTimetableParser.parseJson(
+                "[\"07:35\",\"0705\",\"07:35\"]");
+
+        assertEquals(List.of(LocalTime.of(7, 5), LocalTime.of(7, 35)), result.weekdayTimes());
+        assertEquals(List.of(), result.weekendTimes());
+        assertEquals(List.of(), result.holidayTimes());
+    }
 }

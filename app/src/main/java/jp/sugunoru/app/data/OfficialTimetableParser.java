@@ -87,7 +87,10 @@ public final class OfficialTimetableParser {
         if (sections.isEmpty()) {
             return new Timetable(extractTimesFromHtmlFragment(sanitized), List.of(), List.of());
         }
+        return assembleTimetable(sections);
+    }
 
+    private static Timetable assembleTimetable(List<Section> sections) {
         List<LocalTime> weekday = new ArrayList<>();
         List<LocalTime> weekend = new ArrayList<>();
         List<LocalTime> holiday = new ArrayList<>();
@@ -117,35 +120,17 @@ public final class OfficialTimetableParser {
     }
 
     public static Timetable parseJson(String json) {
-        List<LocalTime> weekday = new ArrayList<>();
-        List<LocalTime> weekend = new ArrayList<>();
-        List<LocalTime> holiday = new ArrayList<>();
-        List<List<LocalTime>> unclassified = new ArrayList<>();
+        List<Section> sections = new ArrayList<>();
         Matcher arrays = JSON_ARRAY.matcher(json);
         while (arrays.find()) {
             List<LocalTime> times = extractTimesFromJsonArray(arrays.group(2));
             if (times.isEmpty()) continue;
-            switch (classify(arrays.group(1))) {
-                case WEEKDAY -> weekday.addAll(times);
-                case WEEKEND -> weekend.addAll(times);
-                case HOLIDAY -> holiday.addAll(times);
-                case WEEKEND_AND_HOLIDAY -> {
-                    weekend.addAll(times);
-                    holiday.addAll(times);
-                }
-                case UNKNOWN -> unclassified.add(times);
-            }
+            sections.add(new Section(classify(arrays.group(1)), times));
         }
-        for (List<LocalTime> times : unclassified) {
-            if (weekday.isEmpty()) weekday.addAll(times);
-            else if (weekend.isEmpty()) weekend.addAll(times);
-            else if (holiday.isEmpty()) holiday.addAll(times);
-            else weekday.addAll(times);
+        if (sections.isEmpty()) {
+            return new Timetable(extractTimesFromJsonArray(json), List.of(), List.of());
         }
-        if (weekday.isEmpty() && weekend.isEmpty() && holiday.isEmpty()) {
-            weekday.addAll(extractTimesFromJsonArray(json));
-        }
-        return new Timetable(weekday, weekend, holiday);
+        return assembleTimetable(sections);
     }
 
     private static List<LocalTime> extractTimesFromHtmlFragment(String html) {

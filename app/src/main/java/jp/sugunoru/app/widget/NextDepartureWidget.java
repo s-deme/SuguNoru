@@ -18,7 +18,6 @@ import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.ui.ScheduleDisplayFormatter;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 
 public final class NextDepartureWidget extends AppWidgetProvider {
@@ -43,7 +42,7 @@ public final class NextDepartureWidget extends AppWidgetProvider {
     private static void update(Context context, AppWidgetManager manager, int id) {
         AppPreferences preferences = new AppPreferences(context);
         RoutePlan.Direction direction = preferences.direction();
-        List<RoutePlan> plans = new ArrayList<>(new RouteRepository(context).load());
+        List<RoutePlan> plans = new RouteRepository(context).load();
         plans.removeIf(plan -> !TransitCatalog.isSupported(plan));
         List<ScheduleEngine.RouteOption> options = ScheduleEngine.compare(
                 plans, direction, LocalDateTime.now(), preferences.holidays());
