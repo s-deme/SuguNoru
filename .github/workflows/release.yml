@@ -175,6 +175,8 @@ jobs:
           expected_permissions="$(mktemp)"
           actual_permissions="$(mktemp)"
           printf '%s\n' \
+            'android.permission.ACCESS_NETWORK_STATE' \
+            'android.permission.INTERNET' \
             'android.permission.POST_NOTIFICATIONS' \
             'android.permission.VIBRATE' | sort -u > "$expected_permissions"
           "$tools/aapt2" dump permissions "$apk" \
