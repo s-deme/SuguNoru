@@ -39,7 +39,11 @@ import jp.sugunoru.app.data.RouteRepository;
 import jp.sugunoru.app.data.AppPreferences;
 import jp.sugunoru.app.data.OfficialTimetableFetcher;
 import jp.sugunoru.app.data.OfficialTimetableParser;
+import jp.sugunoru.app.data.OdptTimetableFetcher;
 import jp.sugunoru.app.data.TransitCatalog;
+import jp.sugunoru.app.data.BusRoutePattern;
+import org.json.JSONArray;
+import org.json.JSONException;
 import jp.sugunoru.app.model.RoutePlan;
 import jp.sugunoru.app.model.ScheduleEngine;
 import jp.sugunoru.app.notification.DepartureAlarmReceiver;
@@ -444,31 +448,21 @@ public final class MainActivity extends StyledActivity {
         LinearLayout form = vertical(Color.TRANSPARENT);
         form.setPadding(dp(18), dp(10), dp(18), dp(28));
 
-        form.addView(formSectionTitle("1", "都営バスの路線を選ぶ", "路線・系統、停留所、行き先・方面を順に選択"));
+        form.addView(formSectionTitle("1", "乗車・降車停留所を選ぶ", "路線 → 乗る停留所 → 降りる停留所。方面は区間から自動判定"));
         form.addView(space(12));
 
-        final String[] selectedRoute = {existing == null ? "" : existing.routeName()};
-        final String[] selectedStop = {existing == null ? "" : existing.stopName()};
-        final String[] selectedDestination = {existing == null ? "" : existing.destination()};
-        TextView routeValue = selectedTransitValue(selectedRoute[0]);
-        TextView stopValue = selectedTransitValue(selectedStop[0]);
-        TextView destinationValue = selectedTransitValue(selectedDestination[0]);
+        FormDraft draft = new FormDraft(existing);
+        TextView routeValue = selectedTransitValue(draft.route);
+        TextView stopValue = selectedTransitValue(draft.stop);
+        TextView destinationValue = selectedTransitValue(draft.destination);
 
         Button chooseRoute = secondaryButton("路線・系統を選ぶ");
-        chooseRoute.setContentDescription("都営バスの路線・系統、停留所、行き先・方面を選ぶ");
-        TextView catalogStatus = text("選択した内容は下に表示されます。",
+        chooseRoute.setContentDescription("都営バスの路線、乗車停留所、降車停留所を選ぶ");
+        TextView catalogStatus = text(existing != null && !existing.destinationIsStop()
+                ? "現在は方面指定の登録です。降りる停留所は路線から選び直せます。"
+                : "初回はODPTから停留所を取得します。取得済みの路線はオフラインでも選べます。",
                 13, BRAND_DARK, Typeface.NORMAL);
         catalogStatus.setPadding(0, dp(10), 0, 0);
-        chooseRoute.setOnClickListener(v -> showTransitServicePicker(
-                (service, stop, destination) -> {
-                    selectedRoute[0] = service.displayName();
-                    selectedStop[0] = stop;
-                    selectedDestination[0] = destination;
-                    catalogStatus.setText(R.string.catalog_toei_selected);
-                    catalogStatus.announceForAccessibility("都営バスの系統を選択しました");
-                    showSelectedTransit(routeValue, stopValue, destinationValue,
-                            selectedRoute[0], selectedStop[0], selectedDestination[0]);
-                }));
         form.addView(chooseRoute);
         form.addView(catalogStatus);
         form.addView(space(16));
@@ -477,7 +471,7 @@ public final class MainActivity extends StyledActivity {
         form.addView(space(8));
         form.addView(selectionValue("乗る停留所", stopValue));
         form.addView(space(8));
-        form.addView(selectionValue("行き先・方面", destinationValue));
+        form.addView(selectionValue("降りる停留所", destinationValue));
         form.addView(space(22));
 
         form.addView(formSectionTitle("2", "時刻表", "公式ページから取得し、通信できないときは保存済みのデータを使います"));
@@ -494,11 +488,6 @@ public final class MainActivity extends StyledActivity {
         holidayInput.setId(R.id.form_holiday);
         addField(form, "公式時刻表ページ（任意）", officialTimetableUrlInput,
                 "交通事業者の https:// 時刻表ページを指定します。ログインやJavaScriptだけで表示するページは対象外です");
-        final long[] draftFetchedAt = {existing == null ? 0 : existing.officialTimetableFetchedAtEpochMillis()};
-        final long[] draftAttemptedAt = {existing == null ? 0 : existing.officialTimetableAttemptedAtEpochMillis()};
-        final String[] draftLastError = {existing == null ? "" : existing.officialTimetableLastError()};
-        final String[] draftFetchedUrl = {existing == null ? "" : existing.officialTimetableUrl()};
-        final boolean[] draftFetchedInThisSession = {false};
         Button fetchOfficial = secondaryButton("公式サイトから時刻表を取得");
         fetchOfficial.setContentDescription("公式時刻表ページから平日、土日、祝日の時刻を取得する");
         fetchOfficial.setOnClickListener(v -> {
@@ -517,17 +506,33 @@ public final class MainActivity extends StyledActivity {
                 return;
             }
             officialTimetableUrlInput.setText(sourceUrl);
+            int version = draft.selectionVersion;
             fetchOfficialTimetableIntoForm(sourceUrl, weekdayInput, weekendInput, holidayInput,
-                    fetchOfficial, () -> {
-                        long now = System.currentTimeMillis();
-                        draftFetchedAt[0] = now;
-                        draftAttemptedAt[0] = now;
-                        draftLastError[0] = "";
-                        draftFetchedUrl[0] = sourceUrl;
-                        draftFetchedInThisSession[0] = true;
+                    fetchOfficial, () -> draft.selectionVersion == version, () -> {
+                        draft.fetched(sourceUrl, false);
                     });
         });
         form.addView(fetchOfficial);
+        form.addView(space(8));
+        Button fetchOdpt = secondaryButton("ODPTから時刻表を取得");
+        fetchOdpt.setContentDescription("ODPTから選択した停留所と方面の時刻表を取得する");
+        fetchOdpt.setOnClickListener(v -> {
+            if (!appPreferences.hasOdptAccessToken()) {
+                Toast.makeText(this, "設定でODPTアクセストークンを保存してください", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (draft.route.isBlank() || draft.stop.isBlank() || draft.destination.isBlank()) {
+                catalogStatus.setText(R.string.catalog_toei_selection_required);
+                catalogStatus.announceForAccessibility("路線を選択してください");
+                return;
+            }
+            int version = draft.selectionVersion;
+            fetchOdptTimetableIntoForm(appPreferences.odptAccessToken(), draft.route, draft.stop,
+                    draft.destination, draft.destinationIsStop, weekdayInput, weekendInput, holidayInput,
+                    fetchOdpt, () -> draft.selectionVersion == version,
+                    () -> draft.fetched("", true));
+        });
+        form.addView(fetchOdpt);
         form.addView(space(18));
         TextView manualTimesLabel = text("手入力の予備", 15, INK, Typeface.BOLD);
         markAsHeading(manualTimesLabel);
@@ -550,6 +555,20 @@ public final class MainActivity extends StyledActivity {
             holidayInput.setText(times(existing.holidayTimes()));
         }
 
+        chooseRoute.setOnClickListener(v -> showTransitServicePicker((service, stop, destination) -> {
+            if (draft.route.equals(service.displayName()) && draft.stop.equals(stop)
+                    && draft.destination.equals(destination) && draft.destinationIsStop) return;
+            draft.select(service.displayName(), stop, destination);
+            weekdayInput.setText("");
+            weekendInput.setText("");
+            holidayInput.setText("");
+            officialTimetableUrlInput.setText("");
+            catalogStatus.setText("区間を選択しました。この区間の時刻表を取得・設定してください。");
+            catalogStatus.announceForAccessibility("乗車・降車停留所を選択しました");
+            showSelectedTransit(routeValue, stopValue, destinationValue,
+                    draft.route, draft.stop, draft.destination);
+        }));
+
         scroll.addView(form);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -560,8 +579,8 @@ public final class MainActivity extends StyledActivity {
         Button save = primaryButton(existing == null ? "登録する" : "変更を保存");
         save.setOnClickListener(v -> {
             try {
-                if (selectedRoute[0].isBlank() || selectedStop[0].isBlank()
-                        || selectedDestination[0].isBlank()) {
+                if (draft.route.isBlank() || draft.stop.isBlank()
+                        || draft.destination.isBlank()) {
                     catalogStatus.setText(R.string.catalog_toei_selection_required);
                     catalogStatus.announceForAccessibility("路線を選択してください");
                     return;
@@ -594,36 +613,23 @@ public final class MainActivity extends StyledActivity {
                     officialTimetableUrlInput.requestFocus();
                     return;
                 }
-                boolean fetchedFromCurrentUrl = officialTimetableUrl.equals(draftFetchedUrl[0]);
-                if (!fetchedFromCurrentUrl) {
-                    draftFetchedAt[0] = 0;
-                    draftAttemptedAt[0] = 0;
-                    draftLastError[0] = "";
-                }
-                boolean manualTimesChanged = existing != null
-                        && (!weekdays.equals(existing.weekdayTimes())
-                        || !weekends.equals(existing.weekendTimes())
-                        || !holidays.equals(existing.holidayTimes()));
-                if (manualTimesChanged && !draftFetchedInThisSession[0]) {
-                    draftFetchedAt[0] = 0;
-                    draftAttemptedAt[0] = 0;
-                    draftLastError[0] = "";
-                }
+                draft.prepareSave(officialTimetableUrl, existing, weekdays, weekends, holidays);
                 RoutePlan plan = new RoutePlan(
                         existing == null ? null : existing.id(),
                         existing == null ? direction : existing.direction(), RoutePlan.Mode.BUS,
-                        selectedRoute[0], selectedStop[0], selectedDestination[0], 0, 0, 0,
+                        draft.route, draft.stop, draft.destination, 0, 0, 0,
                         true, weekdays, weekends, holidays,
                         "", null, System.currentTimeMillis(),
-                        officialTimetableUrl, draftFetchedAt[0], draftAttemptedAt[0], draftLastError[0]);
+                        officialTimetableUrl, draft.fetchedAt, draft.attemptedAt, draft.lastError,
+                        draft.usesOdpt, draft.destinationIsStop);
                 List<RoutePlan> updated = new ArrayList<>(plans);
                 if (existing == null) updated.add(plan);
                 else updated.set(indexOf(existing.id()), plan);
                 if (!saveAndApply(updated)) throw new IllegalStateException("端末に保存できませんでした");
                 showDashboard();
-                if (plan.hasOfficialTimetableSource()
+                if (hasRefreshableTimetableSource(plan)
                         && (plan.officialTimetableFetchedAtEpochMillis() == 0 || !plan.hasCachedTimetable())) {
-                    Toast.makeText(this, "保存しました。公式時刻表を取得しています", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "保存しました。時刻表を取得しています", Toast.LENGTH_SHORT).show();
                     refreshOfficialTimetables(List.of(plan.id()), true);
                 } else {
                     Toast.makeText(this, existing == null ? "登録しました" : "変更を保存しました", Toast.LENGTH_SHORT).show();
@@ -687,26 +693,95 @@ public final class MainActivity extends StyledActivity {
     private void showTransitStopPicker(
             TransitCatalog.Service service, TransitSelectionCallback callback
     ) {
-        List<String> stops = service.stops();
+        String cached = appPreferences.routePatterns(service.displayName());
+        if (!cached.isBlank()) {
+            try {
+                List<BusRoutePattern> patterns = OdptTimetableFetcher.parsePatterns(new JSONArray(cached));
+                if (!patterns.isEmpty()) {
+                    showBoardingPicker(service, patterns, callback);
+                    return;
+                }
+            } catch (JSONException | OdptTimetableFetcher.FetchException ignored) {
+                // Corrupt cache is replaced only after a successful fetch.
+            }
+        }
+        fetchTransitStops(service, callback);
+    }
+
+    private void fetchTransitStops(TransitCatalog.Service service, TransitSelectionCallback callback) {
+        if (!appPreferences.hasOdptAccessToken()) {
+            new AlertDialog.Builder(this).setTitle("停留所データを取得するには")
+                    .setMessage("設定でODPTアクセストークンを保存してください。一度取得するとオフラインでも停留所を選べます。")
+                    .setPositiveButton("設定を開く", (dialog, ignored) -> showSettings())
+                    .setNegativeButton("戻る", null).show();
+            return;
+        }
+        if (!hasUsableNetwork()) {
+            new AlertDialog.Builder(this).setTitle("停留所を取得できません")
+                    .setMessage("この路線の停留所を取得するには通信が必要です。現在の選択は保持しています。")
+                    .setPositiveButton("再試行", (dialog, ignored) -> fetchTransitStops(service, callback))
+                    .setNegativeButton("戻る", null).show();
+            return;
+        }
+        String token = appPreferences.odptAccessToken();
+        AlertDialog progress = new AlertDialog.Builder(this).setTitle(service.displayName())
+                .setMessage("停留所と運行経路を取得中…")
+                .setNegativeButton("キャンセル", null).show();
+        officialTimetableExecutor.execute(() -> {
+            try {
+                OdptTimetableFetcher.RoutePatterns result = new OdptTimetableFetcher()
+                        .routePatterns(token, service.displayName());
+                List<BusRoutePattern> patterns = result.patterns();
+                appPreferences.setRoutePatterns(service.displayName(), result.cacheJson());
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || !progress.isShowing()) return;
+                    progress.dismiss();
+                    showBoardingPicker(service, patterns, callback);
+                });
+            } catch (OdptTimetableFetcher.FetchException error) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || !progress.isShowing()) return;
+                    progress.dismiss();
+                    new AlertDialog.Builder(this).setTitle("停留所を取得できません")
+                            .setMessage(error.getMessage() + "。現在の選択と保存済みデータは保持しています。")
+                            .setPositiveButton("再試行", (dialog, ignored) -> fetchTransitStops(service, callback))
+                            .setNegativeButton("戻る", null).show();
+                });
+            }
+        });
+    }
+
+    private void showBoardingPicker(TransitCatalog.Service service, List<BusRoutePattern> patterns,
+                                    TransitSelectionCallback callback) {
+        List<String> stops = BusRoutePattern.boardingStops(patterns);
+        if (stops.isEmpty()) {
+            new AlertDialog.Builder(this).setTitle("乗車できる停留所がありません")
+                    .setMessage("停留所データを更新してください。")
+                    .setPositiveButton("更新", (dialog, ignored) -> fetchTransitStops(service, callback))
+                    .setNegativeButton("戻る", null).show();
+            return;
+        }
         new AlertDialog.Builder(this)
-                .setTitle(service.displayName() + "\n乗る駅・停留所を選ぶ")
+                .setTitle(service.displayName() + "\n乗る停留所を選ぶ")
                 .setItems(stops.toArray(new CharSequence[0]), (dialog, selected) ->
-                        showTransitDestinationPicker(service, stops.get(selected), callback))
+                        showTransitDestinationPicker(service, patterns, stops.get(selected), callback))
                 .setNegativeButton("戻る", (dialog, ignored) -> showTransitServicePicker(callback))
+                .setNeutralButton("停留所を更新", (dialog, ignored) -> fetchTransitStops(service, callback))
                 .show();
     }
 
     private void showTransitDestinationPicker(
             TransitCatalog.Service service,
+            List<BusRoutePattern> patterns,
             String stop,
             TransitSelectionCallback callback
     ) {
-        List<String> destinations = service.destinations();
+        List<String> destinations = BusRoutePattern.alightingStops(patterns, stop);
         new AlertDialog.Builder(this)
-                .setTitle("行き先・方面を選ぶ")
+                .setTitle(stop + "から降りる停留所を選ぶ")
                 .setItems(destinations.toArray(new CharSequence[0]),
                         (dialog, selected) -> callback.onSelected(service, stop, destinations.get(selected)))
-                .setNegativeButton("戻る", (dialog, ignored) -> showTransitStopPicker(service, callback))
+                .setNegativeButton("戻る", (dialog, ignored) -> showBoardingPicker(service, patterns, callback))
                 .show();
     }
 
@@ -735,7 +810,8 @@ public final class MainActivity extends StyledActivity {
         TextView stop = text(plan.stopName(), 26, INK, Typeface.BOLD);
         stop.setPadding(0, 0, 0, dp(3));
         summary.addView(stop);
-        summary.addView(text(plan.routeName() + "  ·  " + plan.destination() + " 行き", 14, MUTED, Typeface.NORMAL));
+        summary.addView(text(plan.routeName() + "  ·  " + plan.destination()
+                + (plan.destinationIsStop() ? " まで" : " 行き"), 14, MUTED, Typeface.NORMAL));
         LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         summaryParams.setMargins(dp(18), dp(8), dp(18), dp(12));
@@ -786,45 +862,56 @@ public final class MainActivity extends StyledActivity {
         card.setBackground(roundRect(INFO_SOFT, 18, INFO, 1));
 
         LinearLayout titleRow = horizontal(Gravity.CENTER_VERTICAL);
-        titleRow.addView(pill(plan.hasOfficialTimetableSource() ? "公式サイト" : "手入力",
+        boolean fromOdpt = plan.hasOdptTimetableSource();
+        titleRow.addView(pill(fromOdpt ? "ODPT" : plan.hasOfficialTimetableSource() ? "公式サイト" : "手入力",
                 INFO, SURFACE));
         TextView title = text(plan.hasOfficialTimetableSource()
-                        ? "時刻表の取得と保存" : "時刻表のデータ元",
+                        || fromOdpt ? "時刻表の取得と保存" : "時刻表のデータ元",
                 15, INK, Typeface.BOLD);
         title.setPadding(dp(8), 0, 0, 0);
         titleRow.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         card.addView(titleRow);
 
         boolean refreshing = refreshingOfficialTimetableIds.contains(plan.id());
+        boolean refreshesFromOdpt = fromOdpt && appPreferences.hasOdptAccessToken();
         String status;
-        if (!plan.hasOfficialTimetableSource()) {
-            status = "現在は手入力の時刻表です。交通事業者の公式ページを設定すると、自動取得できます。";
+        if (!plan.hasOfficialTimetableSource() && !fromOdpt) {
+            status = appPreferences.hasOdptAccessToken()
+                    ? "現在は手入力の時刻表です。編集画面からODPTまたは公式ページで更新できます。"
+                    : "現在は手入力の時刻表です。交通事業者の公式ページを設定すると、自動取得できます。";
         } else if (refreshing) {
-            status = "公式サイトから取得中です。表示中の時刻表は端末に保存された最終データのままです。";
+            status = (refreshesFromOdpt ? "ODPT" : "公式サイト")
+                    + "から取得中です。表示中の時刻表は端末に保存された最終データのままです。";
         } else if (!plan.hasCachedTimetable()) {
             status = "まだ取得済みの時刻表がありません。オンラインで更新すると、この端末に保存されます。";
         } else if (!plan.officialTimetableLastError().isEmpty()) {
             status = "前回の更新に失敗したため、保存済みの最終取得データを表示しています。";
         } else if (plan.officialTimetableFetchedAtEpochMillis() > 0) {
-            status = "最終取得: " + officialTimetableTimestamp(plan.officialTimetableFetchedAtEpochMillis())
+            status = (fromOdpt ? "ODPTから" : "公式サイトから") + "最終取得: "
+                    + officialTimetableTimestamp(plan.officialTimetableFetchedAtEpochMillis())
                     + "\n通信できない場合も、この保存済みデータを使用します。";
         } else {
-            status = "保存済みの手入力データを表示しています。公式サイトから更新すると、次回以降も自動で確認します。";
+            status = "保存済みの手入力データを表示しています。更新すると、次回以降も自動で確認します。";
         }
         TextView body = text(status, 13, INK, Typeface.NORMAL);
         body.setLineSpacing(dp(2), 1f);
         body.setPadding(0, dp(9), 0, dp(9));
         card.addView(body);
 
-        Button action = plan.hasOfficialTimetableSource()
-                ? secondaryButton(refreshing ? "公式サイトから取得中…" : "公式サイトから今すぐ更新")
-                : smallButton("公式サイトを設定");
+        boolean canRefresh = refreshesFromOdpt || plan.hasOfficialTimetableSource();
+        Button action = canRefresh
+                ? secondaryButton(refreshing ? (refreshesFromOdpt ? "ODPTから取得中…" : "公式サイトから取得中…")
+                        : (refreshesFromOdpt ? "ODPTから今すぐ更新" : "公式サイトから今すぐ更新"))
+                : smallButton(fromOdpt ? "ODPTトークンを設定" : "時刻表を設定");
         action.setEnabled(!refreshing);
-        action.setContentDescription(plan.hasOfficialTimetableSource()
-                ? "公式サイトから時刻表を今すぐ更新する" : "公式時刻表ページを設定する");
+        action.setContentDescription(canRefresh
+                ? (refreshesFromOdpt ? "ODPTから時刻表を今すぐ更新する" : "公式サイトから時刻表を今すぐ更新する")
+                : (fromOdpt ? "ODPTアクセストークンを設定する" : "時刻表を設定する"));
         action.setOnClickListener(v -> {
-            if (plan.hasOfficialTimetableSource()) {
+            if (canRefresh) {
                 refreshOfficialTimetables(List.of(plan.id()), true);
+            } else if (fromOdpt) {
+                showSettings();
             } else {
                 showForm(plan);
             }
@@ -970,15 +1057,67 @@ public final class MainActivity extends StyledActivity {
         content.addView(backupCard);
         content.addView(space(12));
 
+        LinearLayout odptCard = settingsCard("ODPT API", "選択した都営バスの時刻表をODPTから取得できます");
+        TextView odptStatus = text(appPreferences.hasOdptAccessToken()
+                        ? "アクセストークンはこの端末に保存済みです。バックアップには含めません。"
+                        : "アクセストークンは未設定です。ODPTから取得する場合のみ入力してください。",
+                14, BRAND_DARK, Typeface.NORMAL);
+        odptStatus.setPadding(dp(12), dp(10), dp(12), dp(10));
+        odptStatus.setLineSpacing(dp(2), 1f);
+        odptStatus.setBackground(roundRect(BRAND_SOFT, 14, 0, 0));
+        odptCard.addView(odptStatus);
+        odptCard.addView(space(10));
+        EditText odptTokenInput = input("ODPTアクセストークン", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_PASSWORD, false);
+        odptTokenInput.setSaveEnabled(false);
+        odptTokenInput.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        addField(odptCard, "ODPTアクセストークン", odptTokenInput,
+                "ソースコードやAPKには含めず、この端末だけに保存します。トークンは表示しません。");
+        Button saveOdptToken = secondaryButton("ODPTアクセストークンを保存");
+        saveOdptToken.setOnClickListener(v -> {
+            try {
+                String token = odptTokenInput.getText().toString();
+                if (token.isBlank()) {
+                    odptTokenInput.setError("ODPTアクセストークンを入力してください");
+                    odptTokenInput.requestFocus();
+                    return;
+                }
+                appPreferences.setOdptAccessToken(token);
+                odptTokenInput.setText("");
+                Toast.makeText(this, "ODPTアクセストークンを保存しました", Toast.LENGTH_SHORT).show();
+                showSettings();
+            } catch (IllegalArgumentException error) {
+                odptTokenInput.setError(error.getMessage());
+            }
+        });
+        odptCard.addView(saveOdptToken);
+        if (appPreferences.hasOdptAccessToken()) {
+            odptCard.addView(space(8));
+            Button clearOdptToken = smallButton("ODPTアクセストークンを削除");
+            clearOdptToken.setMinHeight(dp(48));
+            clearOdptToken.setTextColor(DANGER);
+            clearOdptToken.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle("ODPTアクセストークンを削除しますか？")
+                    .setMessage("ODPTからの次回更新には、もう一度入力が必要です。保存済みの時刻表は残ります。")
+                    .setNegativeButton("キャンセル", null)
+                    .setPositiveButton("削除", (dialog, which) -> {
+                        appPreferences.setOdptAccessToken("");
+                        showSettings();
+                    }).show());
+            odptCard.addView(clearOdptToken);
+        }
+        content.addView(odptCard);
+        content.addView(space(12));
+
         List<RoutePlan> toeiPlans = toeiBusPlans();
         List<String> officialSourceIds = new ArrayList<>();
         for (RoutePlan plan : toeiPlans) {
-            if (plan.hasOfficialTimetableSource()) officialSourceIds.add(plan.id());
+            if (hasRefreshableTimetableSource(plan)) officialSourceIds.add(plan.id());
         }
-        LinearLayout officialCard = settingsCard("公式時刻表の更新",
-                "設定済みの公式ページを起動時に確認し、最終取得データを端末に保存します");
+        LinearLayout officialCard = settingsCard("時刻表の更新",
+                "ODPTまたは公式ページを起動時に確認し、最終取得データを端末に保存します");
         if (officialSourceIds.isEmpty()) {
-            TextView empty = text("公式時刻表ページが設定された路線はありません。路線の編集から追加できます。",
+            TextView empty = text("更新対象の路線はありません。路線の編集からODPTまたは公式ページを設定できます。",
                     14, MUTED, Typeface.NORMAL);
             empty.setLineSpacing(dp(2), 1f);
             officialCard.addView(empty);
@@ -989,7 +1128,7 @@ public final class MainActivity extends StyledActivity {
             }
             TextView status = text(refreshingCount > 0
                             ? refreshingCount + "件を取得中です。保存済みの時刻表はそのまま利用できます。"
-                            : officialSourceIds.size() + "件の公式時刻表を設定済みです。通信できない場合も最終取得データを使用します。",
+                            : officialSourceIds.size() + "件の時刻表を設定済みです。通信できない場合も最終取得データを使用します。",
                     14, BRAND_DARK, Typeface.NORMAL);
             status.setLineSpacing(dp(2), 1f);
             status.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -997,7 +1136,7 @@ public final class MainActivity extends StyledActivity {
             officialCard.addView(status);
             officialCard.addView(space(10));
             Button refreshAll = secondaryButton(refreshingCount > 0
-                    ? "公式時刻表を取得中…" : "公式時刻表をすべて更新");
+                    ? "時刻表を取得中…" : "時刻表をすべて更新");
             refreshAll.setEnabled(refreshingCount == 0);
             refreshAll.setOnClickListener(v -> refreshOfficialTimetables(officialSourceIds, true));
             officialCard.addView(refreshAll);
@@ -1289,40 +1428,62 @@ public final class MainActivity extends StyledActivity {
 
     private void fetchOfficialTimetableIntoForm(
             String sourceUrl, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
-            Button action, Runnable onSuccess
+            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
+    ) {
+        fetchTimetableIntoForm("公式サイト", () -> new OfficialTimetableFetcher().fetch(sourceUrl).timetable(),
+                weekdayInput, weekendInput, holidayInput, action, selectionIsCurrent, onSuccess);
+    }
+
+    private void fetchOdptTimetableIntoForm(
+            String accessToken, String routeName, String stopName, String destination,
+            boolean destinationIsStop, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
+            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
+    ) {
+        fetchTimetableIntoForm("ODPT", () -> new OdptTimetableFetcher().fetch(
+                        accessToken, routeName, stopName, destination, destinationIsStop).timetable(),
+                weekdayInput, weekendInput, holidayInput, action, selectionIsCurrent, onSuccess);
+    }
+
+    private void fetchTimetableIntoForm(
+            String source, java.util.concurrent.Callable<OfficialTimetableParser.Timetable> fetch,
+            EditText weekdayInput, EditText weekendInput, EditText holidayInput,
+            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
     ) {
         if (!hasUsableNetwork()) {
-            Toast.makeText(this,
-                    "通信できないため取得できません。入力済みの時刻表は変更していません。",
+            Toast.makeText(this, "通信できないため取得できません。入力済みの時刻表は変更していません。",
                     Toast.LENGTH_LONG).show();
             return;
         }
         action.setEnabled(false);
-        action.setText("公式サイトから取得中…");
+        action.setText(source + "から取得中…");
         officialTimetableExecutor.execute(() -> {
+            OfficialTimetableParser.Timetable timetable = null;
+            String errorMessage = null;
             try {
-                OfficialTimetableFetcher.FetchResult result = new OfficialTimetableFetcher().fetch(sourceUrl);
-                runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
-                    OfficialTimetableParser.Timetable timetable = result.timetable();
-                    weekdayInput.setText(times(timetable.weekdayTimes()));
-                    weekendInput.setText(times(timetable.weekendTimes()));
-                    holidayInput.setText(times(timetable.holidayTimes()));
-                    onSuccess.run();
-                    action.setEnabled(true);
-                    action.setText("公式サイトから時刻表を再取得");
-                    Toast.makeText(this, "公式サイトから時刻表を取得しました。内容を確認して保存してください。",
-                            Toast.LENGTH_LONG).show();
-                });
-            } catch (OfficialTimetableFetcher.FetchException error) {
-                runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
-                    action.setEnabled(true);
-                    action.setText("公式サイトから時刻表を取得");
-                    Toast.makeText(this, error.getMessage() + "。入力済みの時刻表は変更していません。",
-                            Toast.LENGTH_LONG).show();
-                });
+                timetable = fetch.call();
+            } catch (Exception error) {
+                errorMessage = error.getMessage();
             }
+            OfficialTimetableParser.Timetable result = timetable;
+            String failure = errorMessage;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || !action.isAttachedToWindow()) return;
+                action.setEnabled(true);
+                action.setText(source + "から時刻表を取得");
+                if (!selectionIsCurrent.getAsBoolean()) return;
+                if (result == null) {
+                    Toast.makeText(this, failure + "。入力済みの時刻表は変更していません。",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                weekdayInput.setText(times(result.weekdayTimes()));
+                weekendInput.setText(times(result.weekendTimes()));
+                holidayInput.setText(times(result.holidayTimes()));
+                onSuccess.run();
+                action.setText(source + "から時刻表を再取得");
+                Toast.makeText(this, source + "から時刻表を取得しました。内容を確認して保存してください。",
+                        Toast.LENGTH_LONG).show();
+            });
         });
     }
 
@@ -1330,11 +1491,16 @@ public final class MainActivity extends StyledActivity {
         long now = System.currentTimeMillis();
         List<String> staleIds = new ArrayList<>();
         for (RoutePlan plan : toeiBusPlans()) {
-            if (plan.hasOfficialTimetableSource() && officialTimetableRefreshIsDue(plan, now)) {
+            if (hasRefreshableTimetableSource(plan) && officialTimetableRefreshIsDue(plan, now)) {
                 staleIds.add(plan.id());
             }
         }
         refreshOfficialTimetables(staleIds, false);
+    }
+
+    private boolean hasRefreshableTimetableSource(RoutePlan plan) {
+        return (plan.hasOdptTimetableSource() && appPreferences.hasOdptAccessToken())
+                || plan.hasOfficialTimetableSource();
     }
 
     private boolean officialTimetableRefreshIsDue(RoutePlan plan, long now) {
@@ -1346,7 +1512,7 @@ public final class MainActivity extends StyledActivity {
     private void refreshOfficialTimetables(List<String> requestedIds, boolean userRequested) {
         if (requestedIds == null || requestedIds.isEmpty()) {
             if (userRequested) {
-                Toast.makeText(this, "公式時刻表ページを設定した路線がありません", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "更新できる時刻表を設定した路線がありません", Toast.LENGTH_LONG).show();
             }
             return;
         }
@@ -1359,14 +1525,17 @@ public final class MainActivity extends StyledActivity {
             return;
         }
 
+        String odptAccessToken = appPreferences.odptAccessToken();
         List<OfficialRefreshRequest> requests = new ArrayList<>();
         for (String id : requestedIds) {
             RoutePlan plan = findPlan(id);
-            if (plan == null || !TransitCatalog.isSupported(plan) || !plan.hasOfficialTimetableSource()
+            boolean usesOdpt = plan != null && plan.hasOdptTimetableSource() && !odptAccessToken.isBlank();
+            if (plan == null || !TransitCatalog.isSupported(plan) || (!usesOdpt && !plan.hasOfficialTimetableSource())
                     || refreshingOfficialTimetableIds.contains(plan.id())) continue;
             refreshingOfficialTimetableIds.add(plan.id());
             requests.add(new OfficialRefreshRequest(plan.id(), plan.officialTimetableUrl(),
-                    plan.updatedAtEpochMillis()));
+                    plan.updatedAtEpochMillis(), usesOdpt, plan.routeName(), plan.stopName(), plan.destination(),
+                    plan.destinationIsStop()));
         }
         if (requests.isEmpty()) {
             if (userRequested) {
@@ -1378,12 +1547,16 @@ public final class MainActivity extends StyledActivity {
 
         officialTimetableExecutor.execute(() -> {
             OfficialTimetableFetcher fetcher = new OfficialTimetableFetcher();
+            OdptTimetableFetcher odptFetcher = new OdptTimetableFetcher();
             List<OfficialRefreshOutcome> outcomes = new ArrayList<>();
             for (OfficialRefreshRequest request : requests) {
                 try {
-                    OfficialTimetableFetcher.FetchResult result = fetcher.fetch(request.sourceUrl());
-                    outcomes.add(new OfficialRefreshOutcome(request, result.timetable(), ""));
-                } catch (OfficialTimetableFetcher.FetchException error) {
+                    OfficialTimetableParser.Timetable timetable = request.usesOdpt()
+                            ? odptFetcher.fetch(odptAccessToken, request.routeName(), request.stopName(),
+                                    request.destination(), request.destinationIsStop()).timetable()
+                            : fetcher.fetch(request.sourceUrl()).timetable();
+                    outcomes.add(new OfficialRefreshOutcome(request, timetable, ""));
+                } catch (OfficialTimetableFetcher.FetchException | OdptTimetableFetcher.FetchException error) {
                     outcomes.add(new OfficialRefreshOutcome(request, null, error.getMessage()));
                 }
             }
@@ -1413,8 +1586,11 @@ public final class MainActivity extends StyledActivity {
             }
             if (outcome.timetable() != null) {
                 OfficialTimetableParser.Timetable timetable = outcome.timetable();
-                updated.set(index, current.withFetchedOfficialTimetable(timetable.weekdayTimes(),
-                        timetable.weekendTimes(), timetable.holidayTimes(), attemptedAt));
+                updated.set(index, outcome.request().usesOdpt()
+                        ? current.withFetchedOdptTimetable(timetable.weekdayTimes(), timetable.weekendTimes(),
+                                timetable.holidayTimes(), attemptedAt)
+                        : current.withFetchedOfficialTimetable(timetable.weekdayTimes(), timetable.weekendTimes(),
+                                timetable.holidayTimes(), attemptedAt));
                 successCount++;
             } else {
                 updated.set(index, current.withOfficialTimetableFetchFailure(attemptedAt, outcome.error()));
@@ -1480,7 +1656,10 @@ public final class MainActivity extends StyledActivity {
         return -1;
     }
 
-    private record OfficialRefreshRequest(String planId, String sourceUrl, long updatedAtEpochMillis) {}
+    private record OfficialRefreshRequest(
+            String planId, String sourceUrl, long updatedAtEpochMillis, boolean usesOdpt,
+            String routeName, String stopName, String destination, boolean destinationIsStop
+    ) {}
 
     private record OfficialRefreshOutcome(
             OfficialRefreshRequest request,

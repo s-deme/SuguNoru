@@ -40,6 +40,8 @@ public final class RoutePlan {
     private final long officialTimetableFetchedAtEpochMillis;
     private final long officialTimetableAttemptedAtEpochMillis;
     private final String officialTimetableLastError;
+    private final boolean odptTimetableSource;
+    private final boolean destinationIsStop;
 
     public RoutePlan(
             String id,
@@ -80,12 +82,50 @@ public final class RoutePlan {
             long officialTimetableAttemptedAtEpochMillis,
             String officialTimetableLastError
     ) {
+        this(id, direction, mode, routeName, stopName, destination, walkMinutes, rideMinutes,
+                finalWalkMinutes, enabled, weekdayTimes, weekendTimes, holidayTimes, notes,
+                validUntil, updatedAtEpochMillis, officialTimetableUrl,
+                officialTimetableFetchedAtEpochMillis, officialTimetableAttemptedAtEpochMillis,
+                officialTimetableLastError, false);
+    }
+
+    public RoutePlan(
+            String id, Direction direction, Mode mode, String routeName, String stopName,
+            String destination, int walkMinutes, int rideMinutes, int finalWalkMinutes,
+            boolean enabled, List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, String notes, LocalDate validUntil,
+            long updatedAtEpochMillis, String officialTimetableUrl,
+            long officialTimetableFetchedAtEpochMillis,
+            long officialTimetableAttemptedAtEpochMillis,
+            String officialTimetableLastError,
+            boolean odptTimetableSource
+    ) {
+        this(id, direction, mode, routeName, stopName, destination, walkMinutes, rideMinutes,
+                finalWalkMinutes, enabled, weekdayTimes, weekendTimes, holidayTimes, notes,
+                validUntil, updatedAtEpochMillis, officialTimetableUrl,
+                officialTimetableFetchedAtEpochMillis, officialTimetableAttemptedAtEpochMillis,
+                officialTimetableLastError, odptTimetableSource, false);
+    }
+
+    public RoutePlan(
+            String id, Direction direction, Mode mode, String routeName, String stopName,
+            String destination, int walkMinutes, int rideMinutes, int finalWalkMinutes,
+            boolean enabled, List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, String notes, LocalDate validUntil,
+            long updatedAtEpochMillis, String officialTimetableUrl,
+            long officialTimetableFetchedAtEpochMillis, long officialTimetableAttemptedAtEpochMillis,
+            String officialTimetableLastError, boolean odptTimetableSource, boolean destinationIsStop
+    ) {
         this.id = id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
         this.direction = Objects.requireNonNull(direction);
         this.mode = Objects.requireNonNull(mode);
         this.routeName = requireText(routeName, "路線名");
         this.stopName = requireText(stopName, "駅・停留所名");
         this.destination = requireText(destination, "行き先");
+        this.destinationIsStop = destinationIsStop;
+        if (destinationIsStop && this.stopName.equals(this.destination)) {
+            throw new IllegalArgumentException("乗車・降車には別の停留所を選択してください");
+        }
         this.walkMinutes = requireRange(walkMinutes, 0, 180, "徒歩時間");
         this.rideMinutes = requireRange(rideMinutes, 0, 600, "乗車時間");
         this.finalWalkMinutes = requireRange(finalWalkMinutes, 0, 180, "到着後の徒歩時間");
@@ -101,6 +141,7 @@ public final class RoutePlan {
         this.officialTimetableAttemptedAtEpochMillis = Math.max(0, officialTimetableAttemptedAtEpochMillis);
         this.officialTimetableLastError = officialTimetableLastError == null
                 ? "" : officialTimetableLastError.trim();
+        this.odptTimetableSource = odptTimetableSource;
         if (!hasCachedTimetable() && this.officialTimetableUrl.isEmpty()) {
             throw new IllegalArgumentException("時刻を1件以上入力してください");
         }
@@ -122,7 +163,7 @@ public final class RoutePlan {
                 weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
                 System.currentTimeMillis(), officialTimetableUrl,
                 officialTimetableFetchedAtEpochMillis, officialTimetableAttemptedAtEpochMillis,
-                officialTimetableLastError);
+                officialTimetableLastError, odptTimetableSource, destinationIsStop);
     }
 
     /** Returns a copy whose timetable came from the configured official source. */
@@ -130,20 +171,32 @@ public final class RoutePlan {
             List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
             List<LocalTime> holidayTimes, long fetchedAtEpochMillis
     ) {
-        return new RoutePlan(id, direction, mode, routeName, stopName, destination,
-                walkMinutes, rideMinutes, finalWalkMinutes, enabled,
-                weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
-                System.currentTimeMillis(), officialTimetableUrl, fetchedAtEpochMillis,
-                fetchedAtEpochMillis, "");
+        return withTimetable(weekdayTimes, weekendTimes, holidayTimes,
+                fetchedAtEpochMillis, fetchedAtEpochMillis, "", false);
+    }
+
+    public RoutePlan withFetchedOdptTimetable(
+            List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, long fetchedAtEpochMillis
+    ) {
+        return withTimetable(weekdayTimes, weekendTimes, holidayTimes,
+                fetchedAtEpochMillis, fetchedAtEpochMillis, "", true);
     }
 
     /** Keeps the last successful timetable intact while recording a failed refresh. */
     public RoutePlan withOfficialTimetableFetchFailure(long attemptedAtEpochMillis, String error) {
+        return withTimetable(weekdayTimes, weekendTimes, holidayTimes,
+                officialTimetableFetchedAtEpochMillis, attemptedAtEpochMillis, error, odptTimetableSource);
+    }
+
+    private RoutePlan withTimetable(List<LocalTime> weekdays, List<LocalTime> weekends,
+                                    List<LocalTime> holidays, long fetchedAt, long attemptedAt,
+                                    String error, boolean usesOdpt) {
         return new RoutePlan(id, direction, mode, routeName, stopName, destination,
                 walkMinutes, rideMinutes, finalWalkMinutes, enabled,
-                weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
+                weekdays, weekends, holidays, notes, validUntil,
                 System.currentTimeMillis(), officialTimetableUrl,
-                officialTimetableFetchedAtEpochMillis, attemptedAtEpochMillis, error);
+                fetchedAt, attemptedAt, error, usesOdpt, destinationIsStop);
     }
 
     public static String normalizeOfficialTimetableUrl(String value) {
@@ -193,6 +246,7 @@ public final class RoutePlan {
         json.put("routeName", routeName);
         json.put("stopName", stopName);
         json.put("destination", destination);
+        if (destinationIsStop) json.put("destinationIsStop", true);
         json.put("walkMinutes", walkMinutes);
         json.put("rideMinutes", rideMinutes);
         json.put("finalWalkMinutes", finalWalkMinutes);
@@ -213,6 +267,7 @@ public final class RoutePlan {
         if (!officialTimetableLastError.isEmpty()) {
             json.put("officialTimetableLastError", officialTimetableLastError);
         }
+        if (odptTimetableSource) json.put("odptTimetableSource", true);
         return json;
     }
 
@@ -239,7 +294,9 @@ public final class RoutePlan {
                 json.optString("officialTimetableUrl", ""),
                 json.optLong("officialTimetableFetchedAt", 0),
                 json.optLong("officialTimetableAttemptedAt", 0),
-                json.optString("officialTimetableLastError", "")
+                json.optString("officialTimetableLastError", ""),
+                json.optBoolean("odptTimetableSource", false),
+                json.optBoolean("destinationIsStop", false)
         );
     }
 
@@ -261,6 +318,7 @@ public final class RoutePlan {
     public String routeName() { return routeName; }
     public String stopName() { return stopName; }
     public String destination() { return destination; }
+    public boolean destinationIsStop() { return destinationIsStop; }
     public int walkMinutes() { return walkMinutes; }
     public int rideMinutes() { return rideMinutes; }
     public int finalWalkMinutes() { return finalWalkMinutes; }
@@ -276,6 +334,7 @@ public final class RoutePlan {
     public long officialTimetableAttemptedAtEpochMillis() { return officialTimetableAttemptedAtEpochMillis; }
     public String officialTimetableLastError() { return officialTimetableLastError; }
     public boolean hasOfficialTimetableSource() { return !officialTimetableUrl.isEmpty(); }
+    public boolean hasOdptTimetableSource() { return odptTimetableSource; }
     public boolean hasCachedTimetable() {
         return !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
     }

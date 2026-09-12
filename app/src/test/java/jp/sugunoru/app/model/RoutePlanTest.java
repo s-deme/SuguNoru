@@ -11,6 +11,18 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class RoutePlanTest {
+    @Test public void refreshAndDuplicateKeepTheAlightingSelection() {
+        RoutePlan plan = new RoutePlan("trip", RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
+                "都07", "錦糸町駅前", "木場駅前", 0, 0, 0, true,
+                List.of(LocalTime.of(7, 0)), List.of(), List.of(), "", null, 1,
+                "", 1, 1, "", true, true);
+        assertTrue(plan.duplicate("都07").destinationIsStop());
+        assertTrue(plan.withFetchedOdptTimetable(plan.weekdayTimes(), List.of(), List.of(), 2).destinationIsStop());
+        assertTrue(plan.withFetchedOfficialTimetable(plan.weekdayTimes(), List.of(), List.of(), 2).destinationIsStop());
+        assertTrue(plan.withOfficialTimetableFetchFailure(3, "offline").destinationIsStop());
+        assertEquals("木場駅前", plan.duplicate("都07").destination());
+    }
+
     @Test public void trimsRequiredRouteLabels() {
         RoutePlan plan = RoutePlan.create(RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
                 "\t 路線 \n", " 停留所 ", " 方面 ", 0, 0,
