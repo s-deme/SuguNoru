@@ -16,6 +16,47 @@ public class JourneySelectionTest extends InstrumentationTestCase {
         if (android.os.Build.VERSION.SDK_INT >= 31) checkSelection(true);
     }
 
+    public void testDatedScheduleCanBeViewedEditedAndSaved() throws Exception {
+        android.content.Context context = getInstrumentation().getTargetContext();
+        assertEquals("jp.sugunoru.app.verification", context.getPackageName());
+        RouteRepository repository = new RouteRepository(context);
+        List<RoutePlan> previous = repository.load();
+        java.time.LocalDate today = java.time.LocalDate.now();
+        var dated = new jp.sugunoru.app.model.DatedTimetable(List.of(
+                new jp.sugunoru.app.model.DatedTimetable.Service(java.util.Set.of(today, today.plusDays(2)),
+                        List.of(LocalTime.of(7, 15), LocalTime.of(18, 30)))));
+        RoutePlan plan = new RoutePlan("dated-ui", RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
+                TransitCatalog.services().get(0).displayName(), "乗車テストA", "降車テストC",
+                0, 0, 0, true, List.of(), List.of(), List.of(), "", null,
+                System.currentTimeMillis(), "", System.currentTimeMillis(), System.currentTimeMillis(), "", true, true, dated);
+        try {
+            for (boolean dark : List.of(false, true)) {
+                assertTrue(repository.save(List.of(plan)));
+                screenshotPrefix = dark ? "dark-" : "light-";
+                if (android.os.Build.VERSION.SDK_INT >= 31) context.getSystemService(android.app.UiModeManager.class)
+                        .setApplicationNightMode(dark ? android.app.UiModeManager.MODE_NIGHT_YES : android.app.UiModeManager.MODE_NIGHT_NO);
+                android.app.Activity activity = getInstrumentation().startActivitySync(
+                        new android.content.Intent(context, jp.sugunoru.app.MainActivity.class)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+                try {
+                    java.lang.reflect.Method show = activity.getClass().getDeclaredMethod("showTimetable", RoutePlan.class);
+                    show.setAccessible(true);
+                    getInstrumentation().runOnMainSync(() -> {
+                        try { show.invoke(activity, plan); } catch (Exception error) { throw new AssertionError(error); }
+                    });
+                    screenshot("dated-timetable.png");
+                    assertTrue(visible("日付を変更"));
+                    click("日付を変更");
+                    assertTrue(visible("キャンセル"));
+                    click("キャンセル");
+                    click("編集");
+                    click("変更を保存");
+                    assertEquals(dated, repository.load().get(0).datedTimetable());
+                } finally { getInstrumentation().runOnMainSync(activity::finish); }
+            }
+        } finally { assertTrue(repository.save(previous)); }
+    }
+
     private void checkSelection(boolean dark) throws Exception {
         android.content.Context context = getInstrumentation().getTargetContext();
         assertEquals("Use -I scripts/verification.gradle to protect personal data",
@@ -42,6 +83,14 @@ public class JourneySelectionTest extends InstrumentationTestCase {
             assertTrue(visible("乗車テストA"));
             assertTrue(visible("降車テストC"));
             screenshot("selected-journey.png");
+            getInstrumentation().runOnMainSync(() -> {
+                assertNull(activity.findViewById(jp.sugunoru.app.R.id.form_weekday));
+                assertNull(activity.findViewById(jp.sugunoru.app.R.id.form_weekend));
+                assertNull(activity.findViewById(jp.sugunoru.app.R.id.form_holiday));
+                assertNull(activity.findViewById(jp.sugunoru.app.R.id.form_official_timetable_url));
+            });
+            click("登録する");
+            assertTrue("Unfetched timetable must not be saved", visible("路線・系統を選ぶ"));
             click("路線・系統を選ぶ");
             click(TransitCatalog.services().get(1).displayName());
             assertTrue(visible("停留所データを取得するには"));
@@ -54,10 +103,14 @@ public class JourneySelectionTest extends InstrumentationTestCase {
     }
 
     private boolean visible(String text) {
-        getInstrumentation().waitForIdleSync();
-        android.view.accessibility.AccessibilityNodeInfo root =
-                getInstrumentation().getUiAutomation().getRootInActiveWindow();
-        return root != null && !root.findAccessibilityNodeInfosByText(text).isEmpty();
+        for (int retry = 0; retry < 30; retry++) {
+            getInstrumentation().waitForIdleSync();
+            android.view.accessibility.AccessibilityNodeInfo root =
+                    getInstrumentation().getUiAutomation().getRootInActiveWindow();
+            if (root != null && !root.findAccessibilityNodeInfosByText(text).isEmpty()) return true;
+            android.os.SystemClock.sleep(100);
+        }
+        return false;
     }
 
     private void click(String text) throws Exception {

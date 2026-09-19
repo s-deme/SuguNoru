@@ -42,6 +42,7 @@ public final class RoutePlan {
     private final String officialTimetableLastError;
     private final boolean odptTimetableSource;
     private final boolean destinationIsStop;
+    private final DatedTimetable datedTimetable;
 
     public RoutePlan(
             String id,
@@ -116,6 +117,24 @@ public final class RoutePlan {
             long officialTimetableFetchedAtEpochMillis, long officialTimetableAttemptedAtEpochMillis,
             String officialTimetableLastError, boolean odptTimetableSource, boolean destinationIsStop
     ) {
+        this(id, direction, mode, routeName, stopName, destination, walkMinutes, rideMinutes,
+                finalWalkMinutes, enabled, weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
+                updatedAtEpochMillis, officialTimetableUrl, officialTimetableFetchedAtEpochMillis,
+                officialTimetableAttemptedAtEpochMillis, officialTimetableLastError, odptTimetableSource,
+                destinationIsStop, null);
+    }
+
+    public RoutePlan(
+            String id, Direction direction, Mode mode, String routeName, String stopName,
+            String destination, int walkMinutes, int rideMinutes, int finalWalkMinutes,
+            boolean enabled, List<LocalTime> weekdayTimes, List<LocalTime> weekendTimes,
+            List<LocalTime> holidayTimes, String notes, LocalDate validUntil,
+            long updatedAtEpochMillis, String officialTimetableUrl,
+            long officialTimetableFetchedAtEpochMillis, long officialTimetableAttemptedAtEpochMillis,
+            String officialTimetableLastError, boolean odptTimetableSource, boolean destinationIsStop,
+            DatedTimetable datedTimetable
+    ) {
+        this.datedTimetable = odptTimetableSource ? datedTimetable : null;
         this.id = id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
         this.direction = Objects.requireNonNull(direction);
         this.mode = Objects.requireNonNull(mode);
@@ -163,7 +182,7 @@ public final class RoutePlan {
                 weekdayTimes, weekendTimes, holidayTimes, notes, validUntil,
                 System.currentTimeMillis(), officialTimetableUrl,
                 officialTimetableFetchedAtEpochMillis, officialTimetableAttemptedAtEpochMillis,
-                officialTimetableLastError, odptTimetableSource, destinationIsStop);
+                officialTimetableLastError, odptTimetableSource, destinationIsStop, datedTimetable);
     }
 
     /** Returns a copy whose timetable came from the configured official source. */
@@ -183,6 +202,13 @@ public final class RoutePlan {
                 fetchedAtEpochMillis, fetchedAtEpochMillis, "", true);
     }
 
+    public RoutePlan withFetchedOdptTimetable(DatedTimetable timetable, long fetchedAt) {
+        return new RoutePlan(id, direction, mode, routeName, stopName, destination,
+                walkMinutes, rideMinutes, finalWalkMinutes, enabled, List.of(), List.of(), List.of(),
+                notes, validUntil, System.currentTimeMillis(), officialTimetableUrl,
+                fetchedAt, fetchedAt, "", true, destinationIsStop, timetable);
+    }
+
     /** Keeps the last successful timetable intact while recording a failed refresh. */
     public RoutePlan withOfficialTimetableFetchFailure(long attemptedAtEpochMillis, String error) {
         return withTimetable(weekdayTimes, weekendTimes, holidayTimes,
@@ -196,7 +222,7 @@ public final class RoutePlan {
                 walkMinutes, rideMinutes, finalWalkMinutes, enabled,
                 weekdays, weekends, holidays, notes, validUntil,
                 System.currentTimeMillis(), officialTimetableUrl,
-                fetchedAt, attemptedAt, error, usesOdpt, destinationIsStop);
+                fetchedAt, attemptedAt, error, usesOdpt, destinationIsStop, usesOdpt ? datedTimetable : null);
     }
 
     public static String normalizeOfficialTimetableUrl(String value) {
@@ -268,6 +294,7 @@ public final class RoutePlan {
             json.put("officialTimetableLastError", officialTimetableLastError);
         }
         if (odptTimetableSource) json.put("odptTimetableSource", true);
+        if (datedTimetable != null) json.put("datedTimetable", datedTimetable.toJson());
         return json;
     }
 
@@ -296,7 +323,8 @@ public final class RoutePlan {
                 json.optLong("officialTimetableAttemptedAt", 0),
                 json.optString("officialTimetableLastError", ""),
                 json.optBoolean("odptTimetableSource", false),
-                json.optBoolean("destinationIsStop", false)
+                json.optBoolean("destinationIsStop", false),
+                json.has("datedTimetable") ? DatedTimetable.fromJson(json.getJSONArray("datedTimetable")) : null
         );
     }
 
@@ -335,7 +363,8 @@ public final class RoutePlan {
     public String officialTimetableLastError() { return officialTimetableLastError; }
     public boolean hasOfficialTimetableSource() { return !officialTimetableUrl.isEmpty(); }
     public boolean hasOdptTimetableSource() { return odptTimetableSource; }
+    public DatedTimetable datedTimetable() { return datedTimetable; }
     public boolean hasCachedTimetable() {
-        return !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
+        return datedTimetable != null || !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
     }
 }

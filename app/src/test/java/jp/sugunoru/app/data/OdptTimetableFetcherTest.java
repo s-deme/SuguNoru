@@ -10,17 +10,6 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 
 public class OdptTimetableFetcherTest {
-    @Test public void directDeparturesAreSortedDeduplicatedAndRespectCalendar() {
-        OdptTimetableFetcher.CalendarTimes times = new OdptTimetableFetcher.CalendarTimes();
-        times.add("odpt.Calendar:Weekday", List.of(LocalTime.of(8, 0), LocalTime.of(7, 0)));
-        times.add("odpt.Calendar:Weekday", List.of(LocalTime.of(7, 0)));
-        times.add("odpt.Calendar:Holiday", List.of(LocalTime.of(9, 0)));
-        times.add("unknown", List.of(LocalTime.of(10, 0)));
-        assertEquals(List.of(LocalTime.of(7, 0), LocalTime.of(8, 0)), times.timetable().weekdayTimes());
-        assertEquals(List.of(LocalTime.of(9, 0)), times.timetable().weekendTimes());
-        assertEquals(List.of(LocalTime.of(9, 0)), times.timetable().holidayTimes());
-    }
-
     @Test public void onlyBoardsTripsThatReachTheAlightingStopLater() {
         BusRoutePattern pattern = new BusRoutePattern("loop", List.of(
                 new BusRoutePattern.Stop(0, "a", "A", true, true),
@@ -44,21 +33,14 @@ public class OdptTimetableFetcherTest {
                 new OdptTimetableFetcher.TripStop("a", "07:00", true, true),
                 new OdptTimetableFetcher.TripStop("c", "", false, false)), "A", "C"));
     }
-    @Test public void groupsBoardingTimesByCalendarAndDestination() throws Exception {
-        OfficialTimetableParser.Timetable result = OdptTimetableFetcher.timetableAt(
-                List.of(
-                        new OdptTimetableFetcher.TimetableRecord(
-                                "odpt.Calendar:Weekday", "pole", "07:05", "新橋駅前", true),
-                        new OdptTimetableFetcher.TimetableRecord(
-                                "odpt.Calendar:Weekday", "pole", "07:10", "渋谷駅前", true),
-                        new OdptTimetableFetcher.TimetableRecord(
-                                "odpt.Calendar:Saturday", "pole", "08:20", "新橋駅前", true),
-                        new OdptTimetableFetcher.TimetableRecord(
-                                "odpt.Calendar:Holiday", "pole", "09:30", "新橋駅前", true)),
-                "pole", "新橋駅前方面");
-
-        assertEquals(List.of(LocalTime.of(7, 5)), result.weekdayTimes());
-        assertEquals(List.of(LocalTime.of(8, 20), LocalTime.of(9, 30)), result.weekendTimes());
-        assertEquals(List.of(LocalTime.of(9, 30)), result.holidayTimes());
+    @Test public void legacyDestinationStillFiltersBoardingAndDirection() {
+        BusRoutePattern pattern = new BusRoutePattern("p", List.of(
+                new BusRoutePattern.Stop(1, "a", "駅前", true, true),
+                new BusRoutePattern.Stop(2, "b", "終点", true, true)));
+        assertEquals(List.of(LocalTime.of(7, 5)), OdptTimetableFetcher.departuresToward(pattern, List.of(
+                new OdptTimetableFetcher.TripStop("a", "07:05", true, true, "新橋駅前"),
+                new OdptTimetableFetcher.TripStop("a", "07:10", true, true, "渋谷駅前"),
+                new OdptTimetableFetcher.TripStop("a", "07:20", false, true, "新橋駅前")),
+                "駅前", "新橋駅前方面"));
     }
 }

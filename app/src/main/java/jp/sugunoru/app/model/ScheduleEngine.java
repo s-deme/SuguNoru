@@ -78,6 +78,7 @@ public final class ScheduleEngine {
     }
 
     public static List<LocalTime> timesFor(RoutePlan plan, LocalDate date, Set<LocalDate> holidays) {
+        if (plan.datedTimetable() != null) return plan.datedTimetable().timesFor(date);
         if (holidays.contains(date) && !plan.holidayTimes().isEmpty()) return plan.holidayTimes();
         DayOfWeek day = date.getDayOfWeek();
         boolean weekend = day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY;

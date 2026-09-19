@@ -7,6 +7,19 @@ import jp.sugunoru.app.model.RoutePlan;
 import static org.junit.Assert.*;
 
 public class FormDraftTest {
+    @Test public void manualSwitchInvalidatesPendingFetchAndClearsDatedData() {
+        FormDraft draft = new FormDraft(null);
+        draft.fetched("", true);
+        draft.datedTimetable = new jp.sugunoru.app.model.DatedTimetable(List.of(
+                new jp.sugunoru.app.model.DatedTimetable.Service(java.util.Set.of(java.time.LocalDate.now()),
+                        List.of(LocalTime.NOON))));
+        int version = draft.selectionVersion;
+        draft.useManual();
+        assertTrue(draft.selectionVersion > version);
+        assertNull(draft.datedTimetable);
+        assertFalse(draft.usesOdpt);
+        assertEquals(0, draft.fetchedAt);
+    }
     @Test public void changingJourneyInvalidatesPendingFetchAndClearsItsSource() {
         FormDraft draft = new FormDraft(null);
         draft.fetched("https://example.com", false);

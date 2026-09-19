@@ -14,9 +14,12 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalTime;
+import java.time.LocalDate;
+import java.util.Map;
+import java.util.HashMap;
+import jp.sugunoru.app.model.DatedTimetable;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 import java.text.Normalizer;
@@ -32,6 +35,17 @@ public final class OdptTimetableFetcher {
     private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
     private static final int MAX_ROUTE_PATTERNS = 50;
     private static final int STOP_POLE_BATCH_SIZE = 10; // ODPT rejects 40 OR conditions.
+    private final String authority;
+
+    public OdptTimetableFetcher() { this("api.odpt.org"); }
+
+    // Tests exercise the same requests against ODPT's unauthenticated public mirror.
+    OdptTimetableFetcher(String authority) {
+        if (!Set.of("api.odpt.org", "api-public.odpt.org").contains(authority)) {
+            throw new IllegalArgumentException("Unknown ODPT host");
+        }
+        this.authority = authority;
+    }
 
     public record FetchResult(OfficialTimetableParser.Timetable timetable) {}
 
@@ -130,13 +144,13 @@ public final class OdptTimetableFetcher {
 
     public FetchResult fetch(String accessToken, String routeName, String boarding, String destination,
                              boolean destinationIsStop) throws FetchException {
-        if (!destinationIsStop) return fetch(accessToken, routeName, boarding, destination);
         List<BusRoutePattern> patterns = routePatterns(accessToken, routeName).patterns().stream()
-                .filter(pattern -> pattern.serves(boarding, destination))
+                .filter(pattern -> destinationIsStop ? pattern.serves(boarding, destination)
+                        : pattern.stops().stream().anyMatch(stop -> stop.canGetOn() && sameText(stop.name(), boarding)))
                 .collect(java.util.stream.Collectors.toList());
         if (patterns.isEmpty()) throw new FetchException("選択した順に乗車・降車できる経路がありません");
         if (patterns.size() > MAX_ROUTE_PATTERNS) throw new FetchException("経路候補が多すぎます");
-        OfficialTimetableParser.Timetable result = emptyTimetable();
+        Map<String, Set<LocalTime>> departures = new HashMap<>();
         for (BusRoutePattern pattern : patterns) {
             JSONArray trips = request("odpt:BusTimetable", accessToken,
                     "odpt:operator", OPERATOR, "odpt:busroutePattern", pattern.id());
@@ -146,19 +160,61 @@ public final class OdptTimetableFetcher {
                 JSONArray objects = trip.optJSONArray("odpt:busTimetableObject");
                 if (objects == null) continue;
                 List<TripStop> stops = parseTripStops(objects);
-                CalendarTimes departures = new CalendarTimes();
-                departures.add(trip.optString("odpt:calendar"),
-                        departuresBetween(pattern, stops, boarding, destination));
-                result = merge(result, departures.timetable());
+                List<LocalTime> times = destinationIsStop
+                        ? departuresBetween(pattern, stops, boarding, destination)
+                        : departuresToward(pattern, stops, boarding, destination);
+                if (!times.isEmpty()) {
+                    String calendar = trip.optString("odpt:calendar");
+                    if (calendar.isBlank()) throw new FetchException("便の運行日カレンダーがありません");
+                    departures.computeIfAbsent(calendar, ignored -> new TreeSet<>()).addAll(times);
+                }
             }
         }
-        if (result.weekdayTimes().isEmpty() && result.weekendTimes().isEmpty() && result.holidayTimes().isEmpty()) {
+        if (departures.isEmpty()) {
             throw new FetchException("降車停留所まで乗車できる便の時刻表がありません");
         }
-        return new FetchResult(result);
+        DatedTimetable dated = datedTimetable(departures,
+                request("odpt:Calendar", accessToken, "odpt:operator", OPERATOR));
+        return new FetchResult(new OfficialTimetableParser.Timetable(List.of(), List.of(), List.of(), dated));
     }
 
-    record TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff) {}
+    record TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff, String destination) {
+        TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff) {
+            this(pole, departureTime, canGetOn, canGetOff, "");
+        }
+    }
+
+    static DatedTimetable datedTimetable(Map<String, Set<LocalTime>> departures, JSONArray calendars)
+            throws FetchException {
+        Map<String, JSONObject> byId = new HashMap<>();
+        for (int i = 0; i < calendars.length(); i++) {
+            JSONObject calendar = calendars.optJSONObject(i);
+            if (calendar != null) byId.put(calendar.optString("owl:sameAs"), calendar);
+        }
+        List<DatedTimetable.Service> services = new ArrayList<>();
+        try {
+            for (Map.Entry<String, Set<LocalTime>> entry : departures.entrySet()) {
+                JSONObject calendar = byId.get(entry.getKey());
+                if (calendar == null) throw new FetchException("便の運行日カレンダーを取得できませんでした");
+                JSONArray days = calendar.getJSONArray("odpt:day");
+                Set<LocalDate> dates = new TreeSet<>();
+                String[] duration = calendar.getString("odpt:duration").split("/", -1);
+                if (duration.length != 2) throw new IllegalArgumentException("Invalid duration");
+                LocalDate start = LocalDate.parse(duration[0]), end = LocalDate.parse(duration[1]);
+                for (int i = 0; i < days.length(); i++) {
+                    LocalDate date = LocalDate.parse(days.getString(i));
+                    if (!date.isBefore(start) && !date.isAfter(end)) dates.add(date);
+                }
+                if (!dates.isEmpty() && !entry.getValue().isEmpty()) {
+                    services.add(new DatedTimetable.Service(dates, List.copyOf(entry.getValue())));
+                }
+            }
+            if (services.isEmpty()) throw new FetchException("運行日が確認できる時刻表がありません");
+            return new DatedTimetable(services);
+        } catch (JSONException | IllegalArgumentException error) {
+            throw new FetchException("運行日カレンダーを読み取れませんでした", error);
+        }
+    }
 
     static List<TripStop> parseTripStops(JSONArray objects) throws FetchException {
         List<JSONObject> ordered = new ArrayList<>();
@@ -167,6 +223,10 @@ public final class OdptTimetableFetcher {
             for (int i = 0; i < objects.length(); i++) {
                 JSONObject stop = objects.getJSONObject(i);
                 int index = stop.getInt("odpt:index");
+                String departure = stop.optString("odpt:departureTime");
+                if (!departure.isBlank() && parseTime(departure) == null) {
+                    throw new FetchException("便の発車時刻を読み取れませんでした");
+                }
                 if (index < 0 || !indices.add(index) || stop.getString("odpt:busstopPole").isBlank()) {
                     throw new IllegalArgumentException("停留所の順序が不正です");
                 }
@@ -177,7 +237,8 @@ public final class OdptTimetableFetcher {
             for (JSONObject stop : ordered) {
                 result.add(new TripStop(stop.getString("odpt:busstopPole"),
                         stop.optString("odpt:departureTime"), canGetOn(stop),
-                        !stop.has("odpt:canGetOff") || stop.optBoolean("odpt:canGetOff", false)));
+                        !stop.has("odpt:canGetOff") || stop.optBoolean("odpt:canGetOff", false),
+                        stop.optString("odpt:destinationSign")));
             }
             return result;
         } catch (JSONException | IllegalArgumentException error) {
@@ -212,108 +273,39 @@ public final class OdptTimetableFetcher {
 
     public FetchResult fetch(String accessToken, String routeName, String stopName, String destination)
             throws FetchException {
-        List<RoutePattern> candidates = matchingPatterns(
-                routePatterns(accessToken, routeName).patterns(), stopName);
-        if (candidates.isEmpty()) {
-            throw new FetchException("ODPTに選択した路線と停留所が見つかりませんでした");
-        }
-        if (candidates.size() > MAX_ROUTE_PATTERNS) {
-            throw new FetchException("ODPTの経路候補が多すぎます。公式時刻表ページを使用してください");
-        }
-
-        OfficialTimetableParser.Timetable result = emptyTimetable();
-        for (RoutePattern candidate : candidates) {
-            JSONArray timetables = request("odpt:BusTimetable", accessToken,
-                    "odpt:operator", OPERATOR,
-                    "odpt:busroutePattern", candidate.id());
-            result = merge(result, timetableAt(timetables, candidate.boardingStopPole(), destination));
-        }
-        if (result.weekdayTimes().isEmpty() && result.weekendTimes().isEmpty()
-                && result.holidayTimes().isEmpty()) {
-            throw new FetchException("ODPTに選択した方面の発車時刻が見つかりませんでした");
-        }
-        return new FetchResult(result);
+        return fetch(accessToken, routeName, stopName, destination, false);
     }
 
-    static OfficialTimetableParser.Timetable timetableAt(
-            JSONArray records, String boardingStopPole, String destination
-    ) {
-        List<TimetableRecord> values = new ArrayList<>();
-        for (int index = 0; index < records.length(); index++) {
-            JSONObject record = records.optJSONObject(index);
-            if (record == null) continue;
-            JSONArray objects = record.optJSONArray("odpt:busTimetableObject");
-            if (objects == null) continue;
-            for (int objectIndex = 0; objectIndex < objects.length(); objectIndex++) {
-                JSONObject object = objects.optJSONObject(objectIndex);
-                if (object == null) continue;
-                values.add(new TimetableRecord(record.optString("odpt:calendar", ""),
-                        object.optString("odpt:busstopPole", ""),
-                        object.optString("odpt:departureTime", ""),
-                        object.optString("odpt:destinationSign", ""), canGetOn(object)));
-            }
+    static List<LocalTime> departuresToward(BusRoutePattern pattern, List<TripStop> trip,
+                                           String boarding, String destination) {
+        Set<String> poles = new java.util.HashSet<>();
+        for (BusRoutePattern.Stop stop : pattern.stops()) {
+            if (stop.canGetOn() && sameText(stop.name(), boarding)) poles.add(stop.pole());
         }
-        return timetableAt(values, boardingStopPole, destination);
-    }
-
-    static OfficialTimetableParser.Timetable timetableAt(
-            List<TimetableRecord> records, String boardingStopPole, String destination
-    ) {
-        CalendarTimes times = new CalendarTimes();
-        for (TimetableRecord record : records) {
-            if (!boardingStopPole.equals(record.busstopPole()) || !record.canGetOn()
-                    || !matchesDestination(record.destination(), destination)) continue;
-            LocalTime time = parseTime(record.departureTime());
-            if (time != null) times.add(record.calendar(), List.of(time));
+        Set<LocalTime> times = new TreeSet<>();
+        for (TripStop stop : trip) {
+            LocalTime time = parseTime(stop.departureTime());
+            if (time != null && stop.canGetOn() && poles.contains(stop.pole())
+                    && matchesDestination(stop.destination(), destination)) times.add(time);
         }
-        return times.timetable();
-    }
-
-    /** Both destination modes use the same canonical pole names and boarding permissions. */
-    private static List<RoutePattern> matchingPatterns(List<BusRoutePattern> patterns, String stopName) {
-        Set<RoutePattern> result = new java.util.LinkedHashSet<>();
-        for (BusRoutePattern pattern : patterns) {
-            for (BusRoutePattern.Stop stop : pattern.stops()) {
-                if (stop.canGetOn() && sameText(stop.name(), stopName)) {
-                    result.add(new RoutePattern(pattern.id(), stop.pole()));
-                }
-            }
-        }
-        return List.copyOf(result);
-    }
-
-    static final class CalendarTimes {
-        private final Set<LocalTime> weekday = new TreeSet<>();
-        private final Set<LocalTime> weekend = new TreeSet<>();
-        private final Set<LocalTime> holiday = new TreeSet<>();
-
-        void add(String calendar, List<LocalTime> times) {
-            switch (calendarKind(calendar)) {
-                case WEEKDAY -> weekday.addAll(times);
-                case WEEKEND -> weekend.addAll(times);
-                case HOLIDAY -> {
-                    weekend.addAll(times);
-                    holiday.addAll(times);
-                }
-                default -> { }
-            }
-        }
-
-        OfficialTimetableParser.Timetable timetable() {
-            return new OfficialTimetableParser.Timetable(
-                    List.copyOf(weekday), List.copyOf(weekend), List.copyOf(holiday));
-        }
+        return List.copyOf(times);
     }
 
     private JSONArray request(String resource, String accessToken, String... parameters)
             throws FetchException {
+        String label = switch (resource) {
+            case "odpt:BusroutePattern" -> "路線の経路";
+            case "odpt:BusstopPole" -> "停留所";
+            case "odpt:Calendar" -> "運行日";
+            default -> "時刻表";
+        };
         Uri.Builder uri = new Uri.Builder()
                 .scheme("https")
-                .authority("api.odpt.org")
+                .authority(authority)
                 .appendPath("api")
                 .appendPath("v4")
-                .appendPath(resource)
-                .appendQueryParameter("acl:consumerKey", accessToken);
+                .appendPath(resource);
+        if (authority.equals("api.odpt.org")) uri.appendQueryParameter("acl:consumerKey", accessToken);
         for (int index = 0; index < parameters.length; index += 2) {
             uri.appendQueryParameter(parameters[index], parameters[index + 1]);
         }
@@ -323,6 +315,7 @@ public final class OdptTimetableFetcher {
             connection.setConnectTimeout(CONNECT_TIMEOUT_MILLIS);
             connection.setReadTimeout(READ_TIMEOUT_MILLIS);
             connection.setRequestMethod("GET");
+            connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("User-Agent", "SuguNoru/2.1 (odpt-timetable-refresh)");
             int status = connection.getResponseCode();
@@ -330,10 +323,10 @@ public final class OdptTimetableFetcher {
                 throw new FetchException("ODPTアクセストークンを確認してください");
             }
             if (status == HttpURLConnection.HTTP_FORBIDDEN) {
-                throw new FetchException("このODPTアクセストークンには時刻表の利用権限がありません");
+                throw new FetchException("このODPTアクセストークンには" + label + "の利用権限がありません");
             }
             if (status < HttpURLConnection.HTTP_OK || status >= HttpURLConnection.HTTP_MULT_CHOICE) {
-                throw new FetchException("ODPTから時刻表を取得できませんでした（HTTP " + status + "）");
+                throw new FetchException("ODPTから" + label + "を取得できませんでした（HTTP " + status + "）");
             }
             try (InputStream input = connection.getInputStream()) {
                 return new JSONArray(new String(readLimited(input), StandardCharsets.UTF_8));
@@ -368,25 +361,6 @@ public final class OdptTimetableFetcher {
         return output.toByteArray();
     }
 
-    private static OfficialTimetableParser.Timetable merge(
-            OfficialTimetableParser.Timetable first, OfficialTimetableParser.Timetable second
-    ) {
-        return new OfficialTimetableParser.Timetable(
-                merged(first.weekdayTimes(), second.weekdayTimes()),
-                merged(first.weekendTimes(), second.weekendTimes()),
-                merged(first.holidayTimes(), second.holidayTimes()));
-    }
-
-    private static List<LocalTime> merged(List<LocalTime> first, List<LocalTime> second) {
-        Set<LocalTime> values = new TreeSet<>(first);
-        values.addAll(second);
-        return new ArrayList<>(values);
-    }
-
-    private static OfficialTimetableParser.Timetable emptyTimetable() {
-        return new OfficialTimetableParser.Timetable(List.of(), List.of(), List.of());
-    }
-
     private static boolean canGetOn(JSONObject value) {
         if (!value.has("odpt:canGetOn")) return true;
         return Boolean.parseBoolean(value.optString("odpt:canGetOn", "false"));
@@ -395,15 +369,6 @@ public final class OdptTimetableFetcher {
     private static LocalTime parseTime(String value) {
         try { return LocalTime.parse(value.trim()); }
         catch (RuntimeException ignored) { return null; }
-    }
-
-    private static CalendarKind calendarKind(String value) {
-        String normalized = value.toLowerCase(Locale.ROOT);
-        if (normalized.contains("weekday")) return CalendarKind.WEEKDAY;
-        if (normalized.contains("holiday")) return CalendarKind.HOLIDAY;
-        if (normalized.contains("saturday") || normalized.contains("sunday")
-                || normalized.contains("weekend")) return CalendarKind.WEEKEND;
-        return CalendarKind.OTHER;
     }
 
     private static boolean matchesDestination(String value, String destination) {
@@ -434,13 +399,6 @@ public final class OdptTimetableFetcher {
         }
         return result.toString();
     }
-
-    private enum CalendarKind { WEEKDAY, WEEKEND, HOLIDAY, OTHER }
-    private record RoutePattern(String id, String boardingStopPole) {}
-    record TimetableRecord(
-            String calendar, String busstopPole, String departureTime, String destination,
-            boolean canGetOn
-    ) {}
 
     public static final class FetchException extends Exception {
         public FetchException(String message) { super(message); }

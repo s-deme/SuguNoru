@@ -3,6 +3,7 @@ package jp.sugunoru.app;
 import java.time.LocalTime;
 import java.util.List;
 import jp.sugunoru.app.model.RoutePlan;
+import jp.sugunoru.app.model.DatedTimetable;
 
 /** Mutable state owned by one registration form, including its pending selection version. */
 final class FormDraft {
@@ -10,6 +11,7 @@ final class FormDraft {
     boolean destinationIsStop, usesOdpt, fetchedInThisSession;
     long fetchedAt, attemptedAt;
     int selectionVersion;
+    DatedTimetable datedTimetable;
 
     FormDraft(RoutePlan existing) {
         route = existing == null ? "" : existing.routeName();
@@ -21,6 +23,7 @@ final class FormDraft {
         fetchedAt = existing == null ? 0 : existing.officialTimetableFetchedAtEpochMillis();
         attemptedAt = existing == null ? 0 : existing.officialTimetableAttemptedAtEpochMillis();
         usesOdpt = existing != null && existing.hasOdptTimetableSource();
+        datedTimetable = existing == null ? null : existing.datedTimetable();
     }
 
     void select(String route, String stop, String destination) {
@@ -40,7 +43,15 @@ final class FormDraft {
         lastError = "";
         fetchedUrl = url;
         usesOdpt = odpt;
+        if (!odpt) datedTimetable = null;
         fetchedInThisSession = true;
+    }
+
+    void useManual() {
+        selectionVersion++;
+        clearFetchStatus();
+        fetchedUrl = "";
+        usesOdpt = fetchedInThisSession = false;
     }
 
     void prepareSave(String url, RoutePlan existing, List<LocalTime> weekdays,
@@ -58,6 +69,7 @@ final class FormDraft {
     }
 
     private void clearFetchStatus() {
+        datedTimetable = null;
         fetchedAt = attemptedAt = 0;
         lastError = "";
     }

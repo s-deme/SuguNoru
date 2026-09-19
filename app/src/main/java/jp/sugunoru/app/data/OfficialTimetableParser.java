@@ -36,19 +36,23 @@ public final class OfficialTimetableParser {
     public record Timetable(
             List<LocalTime> weekdayTimes,
             List<LocalTime> weekendTimes,
-            List<LocalTime> holidayTimes
+            List<LocalTime> holidayTimes,
+            jp.sugunoru.app.model.DatedTimetable datedTimetable
     ) {
+        public Timetable(List<LocalTime> weekdays, List<LocalTime> weekends, List<LocalTime> holidays) {
+            this(weekdays, weekends, holidays, null);
+        }
         public Timetable {
             weekdayTimes = immutableSorted(weekdayTimes);
             weekendTimes = immutableSorted(weekendTimes);
             holidayTimes = immutableSorted(holidayTimes);
-            if (weekdayTimes.isEmpty() && weekendTimes.isEmpty() && holidayTimes.isEmpty()) {
+            if (datedTimetable == null && weekdayTimes.isEmpty() && weekendTimes.isEmpty() && holidayTimes.isEmpty()) {
                 throw new IllegalArgumentException("公式ページから発車時刻を見つけられませんでした");
             }
         }
 
         public boolean hasAnyTimes() {
-            return !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
+            return datedTimetable != null || !weekdayTimes.isEmpty() || !weekendTimes.isEmpty() || !holidayTimes.isEmpty();
         }
 
         private static List<LocalTime> immutableSorted(List<LocalTime> values) {

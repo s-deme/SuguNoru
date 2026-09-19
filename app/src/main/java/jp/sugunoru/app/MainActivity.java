@@ -95,6 +95,7 @@ public final class MainActivity extends StyledActivity {
     private ScheduleEngine.Departure pendingReminderDeparture;
     private int lastRenderedMinute = -1;
     private int timetableScheduleType;
+    private LocalDate timetableDate = LocalDate.now();
 
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
@@ -131,6 +132,7 @@ public final class MainActivity extends StyledActivity {
                 screen = Screen.DASHBOARD;
             }
             timetableScheduleType = state.getInt("scheduleType", 0);
+            timetableDate = LocalDate.parse(state.getString("timetableDate", LocalDate.now().toString()));
             if (screen == Screen.FORM) showForm(selectedPlan);
             else if (screen == Screen.TIMETABLE && selectedPlan != null) showTimetableFor(selectedPlan, timetableScheduleType);
             else if (screen == Screen.SETTINGS) showSettings();
@@ -161,6 +163,7 @@ public final class MainActivity extends StyledActivity {
         outState.putString("screen", screen.name());
         if (selectedPlan != null) outState.putString("selectedPlanId", selectedPlan.id());
         outState.putInt("scheduleType", timetableScheduleType);
+        outState.putString("timetableDate", timetableDate.toString());
         super.onSaveInstanceState(outState);
     }
 
@@ -474,46 +477,14 @@ public final class MainActivity extends StyledActivity {
         form.addView(selectionValue("降りる停留所", destinationValue));
         form.addView(space(22));
 
-        form.addView(formSectionTitle("2", "時刻表", "公式ページから取得し、通信できないときは保存済みのデータを使います"));
+        form.addView(formSectionTitle("2", "時刻表", "ODPTから運行日と時刻を取得し、端末に保存します"));
         form.addView(space(12));
 
-        EditText officialTimetableUrlInput = input("https://…",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, false);
-        officialTimetableUrlInput.setId(R.id.form_official_timetable_url);
-        EditText weekdayInput = input("07:05  07:18  07:34\n08:02  08:20", InputType.TYPE_CLASS_TEXT, true);
-        weekdayInput.setId(R.id.form_weekday);
-        EditText weekendInput = input("08:10  08:40  09:10", InputType.TYPE_CLASS_TEXT, true);
-        weekendInput.setId(R.id.form_weekend);
-        EditText holidayInput = input("08:10  08:40  09:10", InputType.TYPE_CLASS_TEXT, true);
-        holidayInput.setId(R.id.form_holiday);
-        addField(form, "公式時刻表ページ（任意）", officialTimetableUrlInput,
-                "交通事業者の https:// 時刻表ページを指定します。ログインやJavaScriptだけで表示するページは対象外です");
-        Button fetchOfficial = secondaryButton("公式サイトから時刻表を取得");
-        fetchOfficial.setContentDescription("公式時刻表ページから平日、土日、祝日の時刻を取得する");
-        fetchOfficial.setOnClickListener(v -> {
-            String sourceUrl;
-            try {
-                sourceUrl = RoutePlan.normalizeOfficialTimetableUrl(
-                        officialTimetableUrlInput.getText().toString());
-            } catch (IllegalArgumentException error) {
-                officialTimetableUrlInput.setError(error.getMessage());
-                officialTimetableUrlInput.requestFocus();
-                return;
-            }
-            if (sourceUrl.isEmpty()) {
-                officialTimetableUrlInput.setError("公式時刻表ページを入力してください");
-                officialTimetableUrlInput.requestFocus();
-                return;
-            }
-            officialTimetableUrlInput.setText(sourceUrl);
-            int version = draft.selectionVersion;
-            fetchOfficialTimetableIntoForm(sourceUrl, weekdayInput, weekendInput, holidayInput,
-                    fetchOfficial, () -> draft.selectionVersion == version, () -> {
-                        draft.fetched(sourceUrl, false);
-                    });
-        });
-        form.addView(fetchOfficial);
-        form.addView(space(8));
+        TextView datedStatus = text("", 14, INK, Typeface.NORMAL);
+        Runnable updateTimetableMode = () -> datedStatus.setText(draft.datedTimetable == null
+                ? "区間を選ぶと時刻表を自動取得します。取得完了後に登録できます。"
+                : "運行日別の時刻表を取得済みです（最終運行日: "
+                    + date(draft.datedTimetable.lastDate()) + "）。保存後も自動更新します。");
         Button fetchOdpt = secondaryButton("ODPTから時刻表を取得");
         fetchOdpt.setContentDescription("ODPTから選択した停留所と方面の時刻表を取得する");
         fetchOdpt.setOnClickListener(v -> {
@@ -528,45 +499,29 @@ public final class MainActivity extends StyledActivity {
             }
             int version = draft.selectionVersion;
             fetchOdptTimetableIntoForm(appPreferences.odptAccessToken(), draft.route, draft.stop,
-                    draft.destination, draft.destinationIsStop, weekdayInput, weekendInput, holidayInput,
+                    draft.destination, draft.destinationIsStop,
                     fetchOdpt, () -> draft.selectionVersion == version,
-                    () -> draft.fetched("", true));
+                    result -> {
+                        draft.fetched("", true);
+                        draft.datedTimetable = result.datedTimetable();
+                        updateTimetableMode.run();
+                    });
         });
         form.addView(fetchOdpt);
         form.addView(space(18));
-        TextView manualTimesLabel = text("手入力の予備", 15, INK, Typeface.BOLD);
-        markAsHeading(manualTimesLabel);
-        form.addView(manualTimesLabel);
-        TextView manualTimesHelp = text("取得結果はここへ反映されます。URLを設定すれば、初回保存後も自動更新します。",
-                13, MUTED, Typeface.NORMAL);
-        manualTimesHelp.setPadding(0, dp(4), 0, dp(10));
-        form.addView(manualTimesHelp);
-        addField(form, "平日の時刻表", weekdayInput, "空白・改行・カンマ区切り。0705 の形式でも入力できます");
-        addFrequencyBuilder(form, weekdayInput, "平日");
-        addField(form, "土日の時刻表", weekendInput, "空欄なら平日の時刻を使います");
-        addFrequencyBuilder(form, weekendInput, "土日");
-        addField(form, "祝日の時刻表", holidayInput, "設定画面で登録した祝日に使います。空欄なら曜日どおり");
-        addFrequencyBuilder(form, holidayInput, "祝日");
-
-        if (existing != null) {
-            officialTimetableUrlInput.setText(existing.officialTimetableUrl());
-            weekdayInput.setText(times(existing.weekdayTimes()));
-            weekendInput.setText(times(existing.weekendTimes()));
-            holidayInput.setText(times(existing.holidayTimes()));
-        }
+        form.addView(datedStatus);
+        updateTimetableMode.run();
 
         chooseRoute.setOnClickListener(v -> showTransitServicePicker((service, stop, destination) -> {
             if (draft.route.equals(service.displayName()) && draft.stop.equals(stop)
                     && draft.destination.equals(destination) && draft.destinationIsStop) return;
             draft.select(service.displayName(), stop, destination);
-            weekdayInput.setText("");
-            weekendInput.setText("");
-            holidayInput.setText("");
-            officialTimetableUrlInput.setText("");
-            catalogStatus.setText("区間を選択しました。この区間の時刻表を取得・設定してください。");
+            updateTimetableMode.run();
+            catalogStatus.setText("区間を選択しました。時刻表を自動取得します。");
             catalogStatus.announceForAccessibility("乗車・降車停留所を選択しました");
             showSelectedTransit(routeValue, stopValue, destinationValue,
                     draft.route, draft.stop, draft.destination);
+            fetchOdpt.performClick();
         }));
 
         scroll.addView(form);
@@ -585,43 +540,20 @@ public final class MainActivity extends StyledActivity {
                     catalogStatus.announceForAccessibility("路線を選択してください");
                     return;
                 }
-                List<LocalTime> weekdays;
-                List<LocalTime> weekends;
-                List<LocalTime> holidays;
-                try {
-                    weekdays = ScheduleEngine.parseTimes(weekdayInput.getText().toString());
-                } catch (IllegalArgumentException error) {
-                    weekdayInput.setError(error.getMessage()); weekdayInput.requestFocus(); return;
-                }
-                try {
-                    weekends = ScheduleEngine.parseTimes(weekendInput.getText().toString());
-                } catch (IllegalArgumentException error) {
-                    weekendInput.setError(error.getMessage()); weekendInput.requestFocus(); return;
-                }
-                try {
-                    holidays = ScheduleEngine.parseTimes(holidayInput.getText().toString());
-                } catch (IllegalArgumentException error) {
-                    holidayInput.setError(error.getMessage()); holidayInput.requestFocus(); return;
-                }
-                if (weekends.isEmpty()) weekends = weekdays;
-                String officialTimetableUrl;
-                try {
-                    officialTimetableUrl = RoutePlan.normalizeOfficialTimetableUrl(
-                            officialTimetableUrlInput.getText().toString());
-                } catch (IllegalArgumentException error) {
-                    officialTimetableUrlInput.setError(error.getMessage());
-                    officialTimetableUrlInput.requestFocus();
+                if (draft.datedTimetable == null) {
+                    datedStatus.setText("時刻表の取得が必要です。トークンと通信状態を確認して再取得してください。");
+                    datedStatus.announceForAccessibility(datedStatus.getText());
+                    fetchOdpt.performClick();
                     return;
                 }
-                draft.prepareSave(officialTimetableUrl, existing, weekdays, weekends, holidays);
                 RoutePlan plan = new RoutePlan(
                         existing == null ? null : existing.id(),
                         existing == null ? direction : existing.direction(), RoutePlan.Mode.BUS,
                         draft.route, draft.stop, draft.destination, 0, 0, 0,
-                        true, weekdays, weekends, holidays,
+                        true, List.of(), List.of(), List.of(),
                         "", null, System.currentTimeMillis(),
-                        officialTimetableUrl, draft.fetchedAt, draft.attemptedAt, draft.lastError,
-                        draft.usesOdpt, draft.destinationIsStop);
+                        "", draft.fetchedAt, draft.attemptedAt, draft.lastError,
+                        true, draft.destinationIsStop, draft.datedTimetable);
                 List<RoutePlan> updated = new ArrayList<>(plans);
                 if (existing == null) updated.add(plan);
                 else updated.set(indexOf(existing.id()), plan);
@@ -790,6 +722,7 @@ public final class MainActivity extends StyledActivity {
         screen = Screen.TIMETABLE;
         selectedPlan = plan;
         LocalDate date = LocalDate.now();
+        timetableDate = date;
         boolean weekend = date.getDayOfWeek() == DayOfWeek.SATURDAY
                 || date.getDayOfWeek() == DayOfWeek.SUNDAY;
         int type = appPreferences.holidays().contains(date) && !plan.holidayTimes().isEmpty()
@@ -829,6 +762,15 @@ public final class MainActivity extends StyledActivity {
 
         LinearLayout tabs = horizontal(Gravity.CENTER);
         tabs.setPadding(dp(18), dp(14), dp(18), dp(10));
+        if (plan.datedTimetable() != null) {
+            Button chooseDate = secondaryButton(date(timetableDate) + " の時刻表（日付を変更）");
+            chooseDate.setOnClickListener(v -> new android.app.DatePickerDialog(this, (picker, year, month, day) -> {
+                timetableDate = LocalDate.of(year, month + 1, day);
+                showTimetableFor(plan, scheduleType);
+            }, timetableDate.getYear(), timetableDate.getMonthValue() - 1, timetableDate.getDayOfMonth()).show());
+            tabs.addView(chooseDate, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
         Button weekday = segmentButton("平日", scheduleType == 0);
         Button weekendButton = segmentButton("土日", scheduleType == 1);
         Button holidayButton = segmentButton("祝日", scheduleType == 2);
@@ -842,6 +784,7 @@ public final class MainActivity extends StyledActivity {
         LinearLayout.LayoutParams third = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
         third.setMarginStart(dp(8));
         tabs.addView(holidayButton, third);
+        }
         root.addView(tabs);
 
         ScrollView scroll = new ScrollView(this);
@@ -849,8 +792,13 @@ public final class MainActivity extends StyledActivity {
         schedule.setPadding(dp(18), 0, dp(18), dp(24));
         List<LocalTime> times = scheduleType == 0 ? plan.weekdayTimes()
                 : scheduleType == 1 ? plan.weekendTimes() : plan.holidayTimes();
-        if (times.isEmpty() && scheduleType != 0) times = plan.weekdayTimes();
-        schedule.addView(timetableRows(times));
+        if (plan.datedTimetable() != null) {
+            times = ScheduleEngine.timesFor(plan, timetableDate);
+            if (times.isEmpty()) schedule.addView(text(timetableDate.isAfter(plan.datedTimetable().lastDate())
+                    ? "保存済みの運行日を過ぎています。時刻表を更新してください。"
+                    : "選択した日付に運行する便は、取得した時刻表にありません。", 14, MUTED, Typeface.NORMAL));
+        } else if (times.isEmpty() && scheduleType != 0) times = plan.weekdayTimes();
+        if (plan.datedTimetable() == null || !times.isEmpty()) schedule.addView(timetableRows(times));
         scroll.addView(schedule);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         setScreenContent(root);
@@ -877,15 +825,16 @@ public final class MainActivity extends StyledActivity {
         String status;
         if (!plan.hasOfficialTimetableSource() && !fromOdpt) {
             status = appPreferences.hasOdptAccessToken()
-                    ? "現在は手入力の時刻表です。編集画面からODPTまたは公式ページで更新できます。"
-                    : "現在は手入力の時刻表です。交通事業者の公式ページを設定すると、自動取得できます。";
+                    ? "以前保存した時刻表です。編集画面でODPTから取得し直してください。"
+                    : "以前保存した時刻表です。設定でODPTトークンを保存し、編集画面で取得し直してください。";
         } else if (refreshing) {
             status = (refreshesFromOdpt ? "ODPT" : "公式サイト")
                     + "から取得中です。表示中の時刻表は端末に保存された最終データのままです。";
         } else if (!plan.hasCachedTimetable()) {
             status = "まだ取得済みの時刻表がありません。オンラインで更新すると、この端末に保存されます。";
         } else if (!plan.officialTimetableLastError().isEmpty()) {
-            status = "前回の更新に失敗したため、保存済みの最終取得データを表示しています。";
+            status = "前回の更新に失敗: " + plan.officialTimetableLastError()
+                    + "\n保存済みの最終取得データを表示しています。";
         } else if (plan.officialTimetableFetchedAtEpochMillis() > 0) {
             status = (fromOdpt ? "ODPTから" : "公式サイトから") + "最終取得: "
                     + officialTimetableTimestamp(plan.officialTimetableFetchedAtEpochMillis())
@@ -968,7 +917,7 @@ public final class MainActivity extends StyledActivity {
         for (Map.Entry<Integer, List<Integer>> entry : byHour.entrySet()) {
             LinearLayout row = horizontal(Gravity.TOP);
             row.setPadding(dp(4), dp(13), dp(4), dp(13));
-            TextView hour = text(String.format(Locale.JAPAN, "%02d", entry.getKey()), 19, BRAND, Typeface.BOLD);
+            TextView hour = text(String.format(Locale.JAPAN, "%02d", entry.getKey()), 19, BRAND_DARK, Typeface.BOLD);
             hour.setFontFeatureSettings("tnum");
             row.addView(hour, new LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT));
             StringBuilder minutes = new StringBuilder();
@@ -1426,31 +1375,24 @@ public final class MainActivity extends StyledActivity {
         return result;
     }
 
-    private void fetchOfficialTimetableIntoForm(
-            String sourceUrl, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
-            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
-    ) {
-        fetchTimetableIntoForm("公式サイト", () -> new OfficialTimetableFetcher().fetch(sourceUrl).timetable(),
-                weekdayInput, weekendInput, holidayInput, action, selectionIsCurrent, onSuccess);
-    }
-
     private void fetchOdptTimetableIntoForm(
             String accessToken, String routeName, String stopName, String destination,
-            boolean destinationIsStop, EditText weekdayInput, EditText weekendInput, EditText holidayInput,
-            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
+            boolean destinationIsStop,
+            Button action, java.util.function.BooleanSupplier selectionIsCurrent,
+            java.util.function.Consumer<OfficialTimetableParser.Timetable> onSuccess
     ) {
         fetchTimetableIntoForm("ODPT", () -> new OdptTimetableFetcher().fetch(
                         accessToken, routeName, stopName, destination, destinationIsStop).timetable(),
-                weekdayInput, weekendInput, holidayInput, action, selectionIsCurrent, onSuccess);
+                action, selectionIsCurrent, onSuccess);
     }
 
     private void fetchTimetableIntoForm(
             String source, java.util.concurrent.Callable<OfficialTimetableParser.Timetable> fetch,
-            EditText weekdayInput, EditText weekendInput, EditText holidayInput,
-            Button action, java.util.function.BooleanSupplier selectionIsCurrent, Runnable onSuccess
+            Button action, java.util.function.BooleanSupplier selectionIsCurrent,
+            java.util.function.Consumer<OfficialTimetableParser.Timetable> onSuccess
     ) {
         if (!hasUsableNetwork()) {
-            Toast.makeText(this, "通信できないため取得できません。入力済みの時刻表は変更していません。",
+            Toast.makeText(this, "通信できないため取得できません。保存済みの時刻表は変更していません。",
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -1472,14 +1414,11 @@ public final class MainActivity extends StyledActivity {
                 action.setText(source + "から時刻表を取得");
                 if (!selectionIsCurrent.getAsBoolean()) return;
                 if (result == null) {
-                    Toast.makeText(this, failure + "。入力済みの時刻表は変更していません。",
+                    Toast.makeText(this, failure + "。保存済みの時刻表は変更していません。",
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                weekdayInput.setText(times(result.weekdayTimes()));
-                weekendInput.setText(times(result.weekendTimes()));
-                holidayInput.setText(times(result.holidayTimes()));
-                onSuccess.run();
+                onSuccess.accept(result);
                 action.setText(source + "から時刻表を再取得");
                 Toast.makeText(this, source + "から時刻表を取得しました。内容を確認して保存してください。",
                         Toast.LENGTH_LONG).show();
@@ -1587,8 +1526,7 @@ public final class MainActivity extends StyledActivity {
             if (outcome.timetable() != null) {
                 OfficialTimetableParser.Timetable timetable = outcome.timetable();
                 updated.set(index, outcome.request().usesOdpt()
-                        ? current.withFetchedOdptTimetable(timetable.weekdayTimes(), timetable.weekendTimes(),
-                                timetable.holidayTimes(), attemptedAt)
+                        ? current.withFetchedOdptTimetable(timetable.datedTimetable(), attemptedAt)
                         : current.withFetchedOfficialTimetable(timetable.weekdayTimes(), timetable.weekendTimes(),
                                 timetable.holidayTimes(), attemptedAt));
                 successCount++;
@@ -1686,54 +1624,6 @@ public final class MainActivity extends StyledActivity {
             catch (RuntimeException error) { throw new IllegalArgumentException("「" + token + "」を YYYY-MM-DD で入力してください"); }
         }
         return result;
-    }
-
-    private void addFrequencyBuilder(LinearLayout parent, EditText target, String label) {
-        Button builder = smallButton("＋ " + label + "の等間隔ダイヤを作る");
-        builder.setMinHeight(dp(48));
-        builder.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        builder.setOnClickListener(v -> showFrequencyBuilder(target));
-        parent.addView(builder);
-        parent.addView(space(8));
-    }
-
-    private void showFrequencyBuilder(EditText target) {
-        LinearLayout fields = vertical(Color.TRANSPARENT);
-        fields.setPadding(dp(20), dp(4), dp(20), 0);
-        EditText start = input("始発  例 06:00", InputType.TYPE_CLASS_DATETIME, false);
-        EditText end = input("最終  例 23:30", InputType.TYPE_CLASS_DATETIME, false);
-        EditText interval = input("間隔（分）  例 15", InputType.TYPE_CLASS_NUMBER, false);
-        fields.addView(start, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        fields.addView(space(8));
-        fields.addView(end, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        fields.addView(space(8));
-        fields.addView(interval, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        new AlertDialog.Builder(this)
-                .setTitle("等間隔の便を作成")
-                .setView(fields)
-                .setNegativeButton("キャンセル", null)
-                .setPositiveButton("時刻欄に追加", (dialog, which) -> {
-                    try {
-                        List<LocalTime> starts = ScheduleEngine.parseTimes(start.getText().toString());
-                        List<LocalTime> ends = ScheduleEngine.parseTimes(end.getText().toString());
-                        int minutes = Integer.parseInt(interval.getText().toString().trim());
-                        if (starts.size() != 1 || ends.size() != 1 || minutes < 1 || minutes > 180
-                                || ends.get(0).isBefore(starts.get(0))) {
-                            throw new IllegalArgumentException("始発・最終・1〜180分の間隔を確認してください");
-                        }
-                        List<LocalTime> generated = new ArrayList<>();
-                        for (LocalTime time = starts.get(0); !time.isAfter(ends.get(0)); time = time.plusMinutes(minutes)) {
-                            generated.add(time);
-                            if (generated.size() > 300) throw new IllegalArgumentException("便数が多すぎます");
-                        }
-                        List<LocalTime> combined = new ArrayList<>(ScheduleEngine.parseTimes(target.getText().toString()));
-                        combined.addAll(generated);
-                        combined = new ArrayList<>(new java.util.TreeSet<>(combined));
-                        target.setText(times(combined));
-                    } catch (RuntimeException error) {
-                        Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                }).show();
     }
 
     private void cancelAllReminders() {

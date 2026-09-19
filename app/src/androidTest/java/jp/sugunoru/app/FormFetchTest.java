@@ -3,7 +3,6 @@ package jp.sugunoru.app;
 import android.content.Intent;
 import android.test.InstrumentationTestCase;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import java.lang.reflect.Method;
 import java.time.LocalTime;
@@ -34,20 +33,14 @@ public class FormFetchTest extends InstrumentationTestCase {
 
     private void checkCompletion(MainActivity activity, boolean fail, boolean current) throws Exception {
         Method method = MainActivity.class.getDeclaredMethod("fetchTimetableIntoForm", String.class,
-                Callable.class, EditText.class, EditText.class, EditText.class,
-                Button.class, BooleanSupplier.class, Runnable.class);
+                Callable.class,
+                Button.class, BooleanSupplier.class, java.util.function.Consumer.class);
         method.setAccessible(true);
         CountDownLatch checkedSelection = new CountDownLatch(1);
         AtomicBoolean applied = new AtomicBoolean();
-        EditText[] inputs = new EditText[3];
         Button[] button = new Button[1];
         getInstrumentation().runOnMainSync(() -> {
             LinearLayout form = new LinearLayout(activity);
-            for (int i = 0; i < inputs.length; i++) {
-                inputs[i] = new EditText(activity);
-                inputs[i].setText("06:00");
-                form.addView(inputs[i]);
-            }
             button[0] = new Button(activity);
             form.addView(button[0]);
             activity.setContentView(form);
@@ -59,9 +52,9 @@ public class FormFetchTest extends InstrumentationTestCase {
         };
         getInstrumentation().runOnMainSync(() -> {
             try {
-                method.invoke(activity, "検証", fetch, inputs[0], inputs[1], inputs[2], button[0],
+                method.invoke(activity, "検証", fetch, button[0],
                         (BooleanSupplier) () -> { checkedSelection.countDown(); return current; },
-                        (Runnable) () -> applied.set(true));
+                        (java.util.function.Consumer<OfficialTimetableParser.Timetable>) result -> applied.set(true));
             } catch (ReflectiveOperationException error) {
                 throw new AssertionError(error);
             }
@@ -71,7 +64,6 @@ public class FormFetchTest extends InstrumentationTestCase {
         getInstrumentation().runOnMainSync(() -> {
             assertTrue(button[0].isEnabled());
             assertEquals(current && !fail, applied.get());
-            assertEquals(current && !fail ? "07:00" : "06:00", inputs[0].getText().toString());
         });
     }
 }
