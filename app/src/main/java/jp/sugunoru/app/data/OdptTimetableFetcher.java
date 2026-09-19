@@ -31,6 +31,7 @@ public final class OdptTimetableFetcher {
     private static final int READ_TIMEOUT_MILLIS = 15_000;
     private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
     private static final int MAX_ROUTE_PATTERNS = 50;
+    private static final int STOP_POLE_BATCH_SIZE = 10; // ODPT rejects 40 OR conditions.
 
     public record FetchResult(OfficialTimetableParser.Timetable timetable) {}
 
@@ -42,13 +43,10 @@ public final class OdptTimetableFetcher {
             throw new FetchException("設定でODPTアクセストークンを保存してください");
         }
         String route = TransitCatalog.odptBusrouteId(routeName);
-        JSONArray records = route.isEmpty() ? new JSONArray()
-                : request("odpt:BusroutePattern", accessToken, "odpt:operator", OPERATOR, "odpt:busroute", route);
-        JSONArray selected = selectRoute(records, routeName);
-        if (selected.length() == 0) {
-            selected = selectRoute(request("odpt:BusroutePattern", accessToken, "odpt:operator", OPERATOR), routeName);
-        }
-        if (selected.length() == 0) throw new FetchException("この系統の停留所データがODPTにありません");
+        if (route.isEmpty()) throw new FetchException("この路線名は公式データで確認できません。路線・系統を選び直してください");
+        JSONArray selected = selectRoute(request("odpt:BusroutePattern", accessToken,
+                "odpt:operator", OPERATOR, "odpt:busroute", route), routeName);
+        if (selected.length() == 0) throw new FetchException("選択した路線の経路をODPTから取得できませんでした");
         // Resolve names from BusstopPole: a pattern's optional note is not a stop-name contract.
         Set<String> poles = new TreeSet<>();
         for (int i = 0; i < selected.length(); i++) {
@@ -64,9 +62,9 @@ public final class OdptTimetableFetcher {
         }
         java.util.Map<String, String> names = new java.util.HashMap<>();
         List<String> ids = new ArrayList<>(poles);
-        for (int i = 0; i < ids.size(); i += 40) {
+        for (int i = 0; i < ids.size(); i += STOP_POLE_BATCH_SIZE) {
             JSONArray recordsWithNames = request("odpt:BusstopPole", accessToken, "owl:sameAs",
-                    String.join(",", ids.subList(i, Math.min(i + 40, ids.size()))));
+                    String.join(",", ids.subList(i, Math.min(i + STOP_POLE_BATCH_SIZE, ids.size()))));
             for (int j = 0; j < recordsWithNames.length(); j++) {
                 JSONObject stop = recordsWithNames.optJSONObject(j);
                 if (stop != null) names.put(stop.optString("owl:sameAs"), stop.optString("dc:title"));
@@ -90,23 +88,16 @@ public final class OdptTimetableFetcher {
         return new RoutePatterns(patterns, selected.toString());
     }
 
-    private static JSONArray selectRoute(JSONArray records, String routeName) {
+    static JSONArray selectRoute(JSONArray records, String routeName) {
         JSONArray selected = new JSONArray();
+        String route = TransitCatalog.odptBusrouteId(routeName);
+        if (route.isEmpty()) return selected;
         for (int i = 0; i < records.length(); i++) {
             JSONObject record = records.optJSONObject(i);
             if (record != null && OPERATOR.equals(record.optString("odpt:operator"))
-                    && matchesRoute(record.optString("dc:title"), routeName)) selected.put(record);
+                    && route.equals(record.optString("odpt:busroute"))) selected.put(record);
         }
         return selected;
-    }
-
-    static boolean matchesRoute(String title, String routeName) {
-        String route = normalizedRoute(routeName);
-        String value = normalized(title);
-        if (route.isEmpty() || !value.startsWith(route)) return false;
-        if (value.length() == route.length()) return true;
-        char next = value.charAt(route.length());
-        return !Character.isLetterOrDigit(next) && next != '-';
     }
 
     public static List<BusRoutePattern> parsePatterns(JSONArray records) throws FetchException {
@@ -424,13 +415,6 @@ public final class OdptTimetableFetcher {
 
     private static boolean sameText(String first, String second) {
         return normalized(first).equals(normalized(second));
-    }
-
-    private static String normalizedRoute(String value) {
-        String route = value == null ? "" : value;
-        route = normalized(route);
-        int description = route.indexOf('(');
-        return normalized(description >= 0 ? route.substring(0, description) : route);
     }
 
     private static String normalizedDestination(String value) {

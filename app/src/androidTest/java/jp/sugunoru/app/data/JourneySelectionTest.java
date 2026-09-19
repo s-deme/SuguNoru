@@ -99,6 +99,23 @@ public class JourneySelectionTest extends InstrumentationTestCase {
                 + "{\"odpt:index\":1,\"odpt:busstopPole\":\"b\",\"stopName\":\"途中テストB\"}]}]";
     }
 
+    public void testOfficialRouteIdentityIgnoresDestinationTitle() throws Exception {
+        // Actual Toei titles/IDs checked 2026-09-19. Old normalization rejected 門 as a letter.
+        JSONArray records = new JSONArray()
+                .put(new JSONObject().put("odpt:operator", "odpt.Operator:Toei")
+                        .put("odpt:busroute", "odpt.Busroute:Toei.To07").put("dc:title", "都０７ 門前仲町行"))
+                .put(new JSONObject().put("odpt:operator", "odpt.Operator:Toei")
+                        .put("odpt:busroute", "odpt.Busroute:Toei.T01").put("dc:title", "都０１（Ｔ０１） 渋谷駅前行"))
+                .put(new JSONObject().put("odpt:operator", "odpt.Operator:Toei")
+                        .put("odpt:busroute", "odpt.Busroute:Toei.To07"))
+                .put(new JSONObject().put("odpt:operator", "odpt.Operator:Other")
+                        .put("odpt:busroute", "odpt.Busroute:Toei.To07"));
+        assertEquals(2, OdptTimetableFetcher.selectRoute(records, "都07（錦糸町駅前〜門前仲町）").length());
+        assertEquals(1, OdptTimetableFetcher.selectRoute(records, "都01（渋谷駅前〜新橋駅前）").length());
+        assertEquals(0, OdptTimetableFetcher.selectRoute(records, "都10").length());
+        assertEquals(0, OdptTimetableFetcher.selectRoute(records, "都070").length());
+    }
+
     public void testCacheAndTripOrder() throws Exception {
         AppPreferences preferences = new AppPreferences(getInstrumentation().getContext());
         preferences.setRoutePatterns("test-only", routeFixture());

@@ -21,14 +21,6 @@ public class OdptTimetableFetcherTest {
         assertEquals(List.of(LocalTime.of(9, 0)), times.timetable().holidayTimes());
     }
 
-    @Test public void routeNamesMatchFullWidthButNotDifferentBranches() {
-        assertTrue(OdptTimetableFetcher.matchesRoute("都０７", "都07（錦糸町駅前〜門前仲町）"));
-        assertTrue(OdptTimetableFetcher.matchesRoute("陽１２－１", "陽12-1（東陽町駅前〜病院）"));
-        assertFalse(OdptTimetableFetcher.matchesRoute("陽12-2", "陽12-1（病院）"));
-        assertFalse(OdptTimetableFetcher.matchesRoute("錦13乙", "錦13甲（晴海）"));
-        assertFalse(OdptTimetableFetcher.matchesRoute("都070", "都07"));
-    }
-
     @Test public void onlyBoardsTripsThatReachTheAlightingStopLater() {
         BusRoutePattern pattern = new BusRoutePattern("loop", List.of(
                 new BusRoutePattern.Stop(0, "a", "A", true, true),
