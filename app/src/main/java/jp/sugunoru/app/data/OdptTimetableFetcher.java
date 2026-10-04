@@ -151,6 +151,7 @@ public final class OdptTimetableFetcher {
         if (patterns.isEmpty()) throw new FetchException("選択した順に乗車・降車できる経路がありません");
         if (patterns.size() > MAX_ROUTE_PATTERNS) throw new FetchException("経路候補が多すぎます");
         Map<String, Set<LocalTime>> departures = new HashMap<>();
+        Map<String, List<DatedTimetable.Journey>> journeys = new HashMap<>();
         for (BusRoutePattern pattern : patterns) {
             JSONArray trips = request("odpt:BusTimetable", accessToken,
                     "odpt:operator", OPERATOR, "odpt:busroutePattern", pattern.id());
@@ -160,25 +161,30 @@ public final class OdptTimetableFetcher {
                 JSONArray objects = trip.optJSONArray("odpt:busTimetableObject");
                 if (objects == null) continue;
                 List<TripStop> stops = parseTripStops(objects);
+                List<DatedTimetable.Journey> tripJourneys = new ArrayList<>();
                 List<LocalTime> times = destinationIsStop
-                        ? departuresBetween(pattern, stops, boarding, destination)
+                        ? departuresBetween(pattern, stops, boarding, destination, tripJourneys)
                         : departuresToward(pattern, stops, boarding, destination);
                 if (!times.isEmpty()) {
                     String calendar = trip.optString("odpt:calendar");
                     if (calendar.isBlank()) throw new FetchException("便の運行日カレンダーがありません");
                     departures.computeIfAbsent(calendar, ignored -> new TreeSet<>()).addAll(times);
+                    journeys.computeIfAbsent(calendar, ignored -> new ArrayList<>()).addAll(tripJourneys);
                 }
             }
         }
         if (departures.isEmpty()) {
             throw new FetchException("降車停留所まで乗車できる便の時刻表がありません");
         }
-        DatedTimetable dated = datedTimetable(departures,
+        DatedTimetable dated = datedTimetable(departures, journeys,
                 request("odpt:Calendar", accessToken, "odpt:operator", OPERATOR));
         return new FetchResult(new OfficialTimetableParser.Timetable(List.of(), List.of(), List.of(), dated));
     }
 
-    record TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff, String destination) {
+    record TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff, String destination, String arrivalTime) {
+        TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff, String destination) {
+            this(pole, departureTime, canGetOn, canGetOff, destination, "");
+        }
         TripStop(String pole, String departureTime, boolean canGetOn, boolean canGetOff) {
             this(pole, departureTime, canGetOn, canGetOff, "");
         }
@@ -186,6 +192,11 @@ public final class OdptTimetableFetcher {
 
     static DatedTimetable datedTimetable(Map<String, Set<LocalTime>> departures, JSONArray calendars)
             throws FetchException {
+        return datedTimetable(departures, Map.of(), calendars);
+    }
+
+    static DatedTimetable datedTimetable(Map<String, Set<LocalTime>> departures,
+            Map<String, List<DatedTimetable.Journey>> journeys, JSONArray calendars) throws FetchException {
         Map<String, JSONObject> byId = new HashMap<>();
         for (int i = 0; i < calendars.length(); i++) {
             JSONObject calendar = calendars.optJSONObject(i);
@@ -206,7 +217,9 @@ public final class OdptTimetableFetcher {
                     if (!date.isBefore(start) && !date.isAfter(end)) dates.add(date);
                 }
                 if (!dates.isEmpty() && !entry.getValue().isEmpty()) {
-                    services.add(new DatedTimetable.Service(dates, List.copyOf(entry.getValue())));
+                    services.add(new DatedTimetable.Service(dates, List.copyOf(entry.getValue()),
+                            journeys.getOrDefault(entry.getKey(), List.of()).stream().distinct()
+                                    .collect(java.util.stream.Collectors.toList())));
                 }
             }
             if (services.isEmpty()) throw new FetchException("運行日が確認できる時刻表がありません");
@@ -238,7 +251,7 @@ public final class OdptTimetableFetcher {
                 result.add(new TripStop(stop.getString("odpt:busstopPole"),
                         stop.optString("odpt:departureTime"), canGetOn(stop),
                         !stop.has("odpt:canGetOff") || stop.optBoolean("odpt:canGetOff", false),
-                        stop.optString("odpt:destinationSign")));
+                        stop.optString("odpt:destinationSign"), stop.optString("odpt:arrivalTime")));
             }
             return result;
         } catch (JSONException | IllegalArgumentException error) {
@@ -249,6 +262,11 @@ public final class OdptTimetableFetcher {
     /** Evaluate each trip separately: a short-working trip must not inherit another trip's destination. */
     static List<LocalTime> departuresBetween(BusRoutePattern pattern, List<TripStop> trip,
                                              String boarding, String alighting) {
+        return departuresBetween(pattern, trip, boarding, alighting, new ArrayList<>());
+    }
+
+    static List<LocalTime> departuresBetween(BusRoutePattern pattern, List<TripStop> trip,
+            String boarding, String alighting, List<DatedTimetable.Journey> journeys) {
         Set<String> boardingPoles = new java.util.HashSet<>();
         Set<String> alightingPoles = new java.util.HashSet<>();
         for (BusRoutePattern.Stop stop : pattern.stops()) {
@@ -264,6 +282,8 @@ public final class OdptTimetableFetcher {
                 TripStop off = trip.get(j);
                 if (off.canGetOff() && alightingPoles.contains(off.pole())) {
                     departures.add(time);
+                    LocalTime arrival = parseTime(off.arrivalTime());
+                    if (arrival != null) journeys.add(new DatedTimetable.Journey(time, arrival));
                     break;
                 }
             }

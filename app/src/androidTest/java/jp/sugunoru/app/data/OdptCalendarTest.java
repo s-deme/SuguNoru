@@ -21,7 +21,8 @@ public class OdptCalendarTest extends InstrumentationTestCase {
                 + "\"odpt:day\":[\"2026-09-21\"]}]");
         DatedTimetable dated = OdptTimetableFetcher.datedTimetable(Map.of(
                 "odpt.Calendar:Specific.Toei.65-100", Set.of(LocalTime.of(9, 0)),
-                "special", Set.of(LocalTime.of(10, 0))), calendars);
+                "special", Set.of(LocalTime.of(10, 0))), Map.of("special", List.of(
+                        new DatedTimetable.Journey(LocalTime.of(10, 0), LocalTime.of(10, 27)))), calendars);
         OfficialTimetableParser.Timetable result = new OfficialTimetableParser.Timetable(List.of(), List.of(), List.of(), dated);
         assertTrue(result.hasAnyTimes());
         RoutePlan plan = RoutePlan.create(RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
@@ -32,6 +33,8 @@ public class OdptCalendarTest extends InstrumentationTestCase {
         assertEquals(List.of(), ScheduleEngine.timesFor(restored, LocalDate.of(2026, 9, 19)));
         assertEquals(List.of(LocalTime.of(9, 0)), ScheduleEngine.timesFor(restored, LocalDate.of(2026, 9, 20)));
         assertEquals(List.of(LocalTime.of(9, 0), LocalTime.of(10, 0)), ScheduleEngine.timesFor(restored, LocalDate.of(2026, 9, 21)));
+        assertEquals(List.of(LocalDate.of(2026, 9, 21).atTime(10, 27)),
+                ScheduleEngine.arrivalTimes(restored, LocalDate.of(2026, 9, 21).atTime(10, 0)));
         try {
             OdptTimetableFetcher.datedTimetable(Map.of("missing", Set.of(LocalTime.NOON)), calendars);
             fail("Missing calendar must not silently drop a service");

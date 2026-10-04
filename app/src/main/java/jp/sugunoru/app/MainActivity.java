@@ -391,6 +391,10 @@ public final class MainActivity extends StyledActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         waitParams.setMargins(0, dp(5), 0, 0);
         timing.addView(wait, waitParams);
+        TextView arrival = text(ScheduleEngine.arrivalLabel(plan, option.departure().at()) + "（ダイヤ）",
+                16, BRAND_DARK, Typeface.BOLD);
+        arrival.setPadding(0, dp(8), 0, 0);
+        timing.addView(arrival);
         card.addView(timing);
         card.addView(space(10));
 
@@ -758,7 +762,7 @@ public final class MainActivity extends StyledActivity {
 
         List<ScheduleEngine.Departure> next = ScheduleEngine.nextDepartures(
                 plan, LocalDateTime.now(), 3, appPreferences.holidays());
-        if (!next.isEmpty()) root.addView(nextDeparturesCard(next));
+        if (!next.isEmpty()) root.addView(nextDeparturesCard(plan, next));
 
         LinearLayout tabs = horizontal(Gravity.CENTER);
         tabs.setPadding(dp(18), dp(14), dp(18), dp(10));
@@ -798,7 +802,15 @@ public final class MainActivity extends StyledActivity {
                     ? "保存済みの運行日を過ぎています。時刻表を更新してください。"
                     : "選択した日付に運行する便は、取得した時刻表にありません。", 14, MUTED, Typeface.NORMAL));
         } else if (times.isEmpty() && scheduleType != 0) times = plan.weekdayTimes();
-        if (plan.datedTimetable() == null || !times.isEmpty()) schedule.addView(timetableRows(times));
+        if (plan.datedTimetable() != null && !times.isEmpty()) {
+            schedule.addView(text("降車停留所への到着予定（ダイヤ上の時刻・遅延は未反映）", 13, MUTED, Typeface.NORMAL));
+            for (LocalTime departure : times) {
+                TextView row = text(departure + " 発  →  "
+                        + ScheduleEngine.arrivalLabel(plan, timetableDate.atTime(departure)), 16, INK, Typeface.NORMAL);
+                row.setPadding(dp(12), dp(12), dp(12), dp(12));
+                schedule.addView(row);
+            }
+        } else if (plan.datedTimetable() == null) schedule.addView(timetableRows(times));
         scroll.addView(schedule);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         setScreenContent(root);
@@ -874,7 +886,7 @@ public final class MainActivity extends StyledActivity {
         return date(value.toLocalDate()) + " " + time(value);
     }
 
-    private View nextDeparturesCard(List<ScheduleEngine.Departure> departures) {
+    private View nextDeparturesCard(RoutePlan plan, List<ScheduleEngine.Departure> departures) {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         scroll.setPadding(dp(18), 0, dp(18), 0);
@@ -883,12 +895,14 @@ public final class MainActivity extends StyledActivity {
             ScheduleEngine.Departure item = departures.get(i);
             LinearLayout chip = vertical(Color.TRANSPARENT);
             chip.setPadding(dp(16), dp(12), dp(16), dp(12));
-            chip.setBackground(roundRect(i == 0 ? BRAND : SURFACE_VARIANT, 17,
+            chip.setBackground(roundRect(i == 0 ? BRAND_SOFT : SURFACE_VARIANT, 17,
                     i == 0 ? 0 : LINE, 1));
             chip.addView(text((i == 0 ? "次の便  " : "") + time(item.at()),
-                    17, i == 0 ? Color.WHITE : INK, Typeface.BOLD));
+                    17, i == 0 ? BRAND_DARK : INK, Typeface.BOLD));
             chip.addView(text(ScheduleEngine.formatMinutes(item.waitMinutes()), 14,
-                    i == 0 ? WHITE : MUTED, Typeface.NORMAL));
+                    i == 0 ? BRAND_DARK : MUTED, Typeface.NORMAL));
+            chip.addView(text(ScheduleEngine.arrivalLabel(plan, item.at()), 14,
+                    i == 0 ? BRAND_DARK : MUTED, Typeface.NORMAL));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             params.setMarginEnd(dp(8));

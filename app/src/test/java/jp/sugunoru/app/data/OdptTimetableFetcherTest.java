@@ -10,6 +10,20 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 
 public class OdptTimetableFetcherTest {
+    @Test public void pairsArrivalWithTheSameTripAndFirstReachableStop() {
+        BusRoutePattern pattern = new BusRoutePattern("loop", List.of(
+                new BusRoutePattern.Stop(0, "a", "A", true, true),
+                new BusRoutePattern.Stop(1, "b", "B", true, true)));
+        var arrivals = new java.util.ArrayList<jp.sugunoru.app.model.DatedTimetable.Journey>();
+        var trip = List.of(new OdptTimetableFetcher.TripStop("b", "23:40", true, true, "", "23:39"),
+                new OdptTimetableFetcher.TripStop("a", "23:55", true, true, "", "23:54"),
+                new OdptTimetableFetcher.TripStop("b", "00:16", false, true, "", "00:15"),
+                new OdptTimetableFetcher.TripStop("b", "00:30", false, true, "", "00:29"));
+        assertEquals(List.of(LocalTime.of(23, 55)),
+                OdptTimetableFetcher.departuresBetween(pattern, trip, "A", "B", arrivals));
+        assertEquals(List.of(new jp.sugunoru.app.model.DatedTimetable.Journey(
+                LocalTime.of(23, 55), LocalTime.of(0, 15))), arrivals);
+    }
     @Test public void onlyBoardsTripsThatReachTheAlightingStopLater() {
         BusRoutePattern pattern = new BusRoutePattern("loop", List.of(
                 new BusRoutePattern.Stop(0, "a", "A", true, true),

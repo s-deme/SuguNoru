@@ -63,7 +63,7 @@ public class ScheduleEngineTest {
                 List.of(local, express), RoutePlan.Direction.OUTBOUND, now);
 
         assertEquals("各停", result.get(0).plan().routeName());
-        assertEquals(LocalTime.of(9, 5), result.get(0).estimatedArrival().toLocalTime());
+        org.junit.Assert.assertNull(result.get(0).estimatedArrival());
     }
 
     @Test public void findsNextDayAfterLastService() {

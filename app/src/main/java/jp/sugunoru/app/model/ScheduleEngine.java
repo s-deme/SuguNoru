@@ -65,7 +65,8 @@ public final class ScheduleEngine {
             if (!next.isEmpty()) {
                 Departure departure = next.get(0);
                 result.add(new RouteOption(plan, departure,
-                        departure.at()));
+                        arrivalTimes(plan, departure.at()).size() == 1
+                                ? arrivalTimes(plan, departure.at()).get(0) : null));
             }
         }
         result.sort(Comparator
@@ -75,6 +76,18 @@ public final class ScheduleEngine {
 
     public static List<LocalTime> timesFor(RoutePlan plan, LocalDate date) {
         return timesFor(plan, date, Set.of());
+    }
+
+    public static List<LocalDateTime> arrivalTimes(RoutePlan plan, LocalDateTime departure) {
+        return plan.datedTimetable() == null ? List.of() : plan.datedTimetable().arrivalsFor(departure);
+    }
+
+    public static String arrivalLabel(RoutePlan plan, LocalDateTime departure) {
+        List<LocalDateTime> arrivals = arrivalTimes(plan, departure);
+        if (arrivals.isEmpty()) return "到着予定 不明";
+        return "到着予定 " + arrivals.stream().map(arrival ->
+                (arrival.toLocalDate().isAfter(departure.toLocalDate()) ? "翌日 " : "")
+                        + arrival.toLocalTime().toString()).collect(java.util.stream.Collectors.joining(" / "));
     }
 
     public static List<LocalTime> timesFor(RoutePlan plan, LocalDate date, Set<LocalDate> holidays) {

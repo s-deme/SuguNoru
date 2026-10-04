@@ -21,6 +21,8 @@
 
 ## 再実行
 
+2026-09-20の到着予定表示追加では、同一便の乗車時刻と降車停留所の `odpt:arrivalTime` を組にして保存する処理を検証した。公開APIの43系統の代表区間すべてで到着時刻を取得し、JSON保存復元を確認。単体44件・Android回帰7件が成功した。日付またぎ、循環経路の乗車後の降車、同時刻発の複数到着、旧データの到着不明を含む。到着時刻はダイヤ上の予定であり、リアルタイムの遅延は取得していない。
+
 JDK 17以上とAndroid SDKを設定し、`./gradlew.bat -I scripts/verification.gradle testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` を実行する。検証用のメインAPKとandroidTest APKをインストールする（パッケージは `jp.sugunoru.app.verification`）。
 
 PowerShell 7で `./scripts/verify-odpt.ps1` を実行すると公開APIで43系統を検証する。認証付き検証は `./scripts/verify-odpt.ps1 -TokenFile <Git管理外のトークンファイルのパス>`。ファイルにはトークン本体だけを保存する。値はコマンド引数やログに出さず、検証アプリのプライベート領域へ標準入力で渡し、終了時にテスト用コピーを削除する。

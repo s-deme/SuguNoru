@@ -24,7 +24,9 @@ public class JourneySelectionTest extends InstrumentationTestCase {
         java.time.LocalDate today = java.time.LocalDate.now();
         var dated = new jp.sugunoru.app.model.DatedTimetable(List.of(
                 new jp.sugunoru.app.model.DatedTimetable.Service(java.util.Set.of(today, today.plusDays(2)),
-                        List.of(LocalTime.of(7, 15), LocalTime.of(18, 30)))));
+                        List.of(LocalTime.of(7, 15), LocalTime.of(18, 30)), List.of(
+                                new jp.sugunoru.app.model.DatedTimetable.Journey(LocalTime.of(7, 15), LocalTime.of(7, 42)),
+                                new jp.sugunoru.app.model.DatedTimetable.Journey(LocalTime.of(18, 30), LocalTime.of(19, 2))))));
         RoutePlan plan = new RoutePlan("dated-ui", RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
                 TransitCatalog.services().get(0).displayName(), "乗車テストA", "降車テストC",
                 0, 0, 0, true, List.of(), List.of(), List.of(), "", null,
@@ -46,6 +48,7 @@ public class JourneySelectionTest extends InstrumentationTestCase {
                     });
                     screenshot("dated-timetable.png");
                     assertTrue(visible("日付を変更"));
+                    assertTrue(visible("到着予定"));
                     click("日付を変更");
                     assertTrue(visible("キャンセル"));
                     click("キャンセル");

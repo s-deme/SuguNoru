@@ -50,6 +50,8 @@ public class OdptLiveTest extends InstrumentationTestCase {
                         var result = fetcher.fetch(token, service.displayName(), boarding, destination, true).timetable();
                         DatedTimetable dated = result.datedTimetable();
                         assertNotNull(dated);
+                        assertTrue("Selected trip must have provider arrival times",
+                                dated.services().stream().anyMatch(serviceDates -> !serviceDates.journeys().isEmpty()));
                         assertFalse(dated.lastDate().isBefore(LocalDate.now()));
                         RoutePlan plan = new RoutePlan(null, RoutePlan.Direction.OUTBOUND, RoutePlan.Mode.BUS,
                                 service.displayName(), boarding, destination, 0, 0, 0, true,

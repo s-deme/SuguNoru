@@ -8,6 +8,19 @@ import java.util.Set;
 import static org.junit.Assert.*;
 
 public class DatedTimetableTest {
+    @Test public void arrivalsRespectDatesMidnightAndMultipleTrips() {
+        LocalDate day = LocalDate.of(2026, 9, 20);
+        LocalTime departure = LocalTime.of(23, 55);
+        DatedTimetable timetable = new DatedTimetable(List.of(new DatedTimetable.Service(Set.of(day),
+                List.of(departure), List.of(new DatedTimetable.Journey(departure, LocalTime.of(0, 15)),
+                        new DatedTimetable.Journey(departure, LocalTime.of(0, 20))))));
+        assertEquals(List.of(day.plusDays(1).atTime(0, 15), day.plusDays(1).atTime(0, 20)),
+                timetable.arrivalsFor(day.atTime(departure)));
+        assertTrue(timetable.arrivalsFor(day.plusDays(1).atTime(departure)).isEmpty());
+        assertTrue(timetable.arrivalsFor(day.atTime(23, 54)).isEmpty());
+        DatedTimetable old = new DatedTimetable(List.of(new DatedTimetable.Service(Set.of(day), List.of(departure))));
+        assertTrue(old.arrivalsFor(day.atTime(departure)).isEmpty());
+    }
     @Test public void datesSurviveRefreshFailureAndNeverFallbackToAnotherDay() {
         LocalDate saturday = LocalDate.of(2026, 9, 19), sunday = saturday.plusDays(1);
         DatedTimetable dates = new DatedTimetable(List.of(
