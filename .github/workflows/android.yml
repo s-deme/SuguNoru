@@ -2,12 +2,9 @@ name: Android CI
 
 on:
   push:
-    branches:
-      - main
+    branches: ['**']
   pull_request:
-    branches:
-      - main
-
+    branches: ['**']
 permissions:
   contents: read
 
@@ -58,7 +55,7 @@ jobs:
 
       - name: Test, lint, and build debug APK
         shell: bash
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
+        run: bash ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
 
       - name: Verify APK signature, identity, and permissions
         shell: bash

@@ -1035,7 +1035,7 @@ public final class MainActivity extends StyledActivity {
                 odptTokenInput.setText("");
                 Toast.makeText(this, "ODPTアクセストークンを保存しました", Toast.LENGTH_SHORT).show();
                 showSettings();
-            } catch (IllegalArgumentException error) {
+            } catch (IllegalArgumentException | IllegalStateException error) {
                 odptTokenInput.setError(error.getMessage());
             }
         });
@@ -1050,8 +1050,13 @@ public final class MainActivity extends StyledActivity {
                     .setMessage("ODPTからの次回更新には、もう一度入力が必要です。保存済みの時刻表は残ります。")
                     .setNegativeButton("キャンセル", null)
                     .setPositiveButton("削除", (dialog, which) -> {
-                        appPreferences.setOdptAccessToken("");
-                        showSettings();
+                        try {
+                            appPreferences.setOdptAccessToken("");
+                            showSettings();
+                        } catch (IllegalStateException error) {
+                            Toast.makeText(this, "トークンを削除できませんでした。もう一度お試しください。",
+                                    Toast.LENGTH_LONG).show();
+                        }
                     }).show());
             odptCard.addView(clearOdptToken);
         }
